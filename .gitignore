@@ -1,0 +1,28 @@
+# Azure Functions
+bin/
+obj/
+.vs/
+*.user
+local.settings.json
+appsettings.json
+*.pubxml
+.publish*
+
+# .NET
+*.dll
+*.exe
+*.pdb
+*.cache
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# IDE
+.idea/
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS
+.DS_Store
+Thumbs.db
