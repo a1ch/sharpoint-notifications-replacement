@@ -8,27 +8,43 @@ namespace SharepointDailyDigest.Services;
 
 public class EmailService : IEmailService
 {
-    private readonly GraphServiceClient _graph;
-    private readonly string _sendFromUserId;
+    private GraphServiceClient? _graph;
+    private string? _sendFromUserId;
+    private readonly object _initLock = new();
 
     public EmailService()
     {
-        var tenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID") ?? "";
-        var clientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID") ?? "";
-        var clientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? "";
-        var credential = new Azure.Identity.ClientSecretCredential(tenantId, clientId, clientSecret);
-        _graph = new GraphServiceClient(credential);
+        // Do not validate here so the worker process can start; validate on first use.
+    }
 
-        // User or shared mailbox to send from (object ID or UPN). Requires Mail.Send application permission.
-        _sendFromUserId = Environment.GetEnvironmentVariable("SEND_FROM_USER_ID") ?? "";
-        if (string.IsNullOrEmpty(_sendFromUserId))
-            throw new InvalidOperationException("Add Application setting SEND_FROM_USER_ID (object ID or UPN of the mailbox to send from).");
+    private void EnsureInitialized()
+    {
+        if (_graph != null) return;
+        lock (_initLock)
+        {
+            if (_graph != null) return;
+            var tenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID") ?? "";
+            var clientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID") ?? "";
+            var clientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? "";
+            var missing = new List<string>();
+            if (string.IsNullOrEmpty(tenantId)) missing.Add("AZURE_TENANT_ID");
+            if (string.IsNullOrEmpty(clientId)) missing.Add("AZURE_CLIENT_ID");
+            if (string.IsNullOrEmpty(clientSecret)) missing.Add("AZURE_CLIENT_SECRET");
+            if (missing.Count > 0)
+                throw new InvalidOperationException("Add these Application settings in the Function App: " + string.Join(", ", missing));
+            _sendFromUserId = Environment.GetEnvironmentVariable("SEND_FROM_USER_ID") ?? "";
+            if (string.IsNullOrEmpty(_sendFromUserId))
+                throw new InvalidOperationException("Add Application setting SEND_FROM_USER_ID (object ID or UPN of the mailbox to send from).");
+            var credential = new Azure.Identity.ClientSecretCredential(tenantId, clientId, clientSecret);
+            _graph = new GraphServiceClient(credential);
+        }
     }
 
     public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, CancellationToken cancellationToken = default)
     {
         if (changes.Count == 0)
             return;
+        EnsureInitialized();
 
         var subject = $"SharePoint digest: {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours";
         var body = BuildDigestHtml(listOrLibraryName, changes);
@@ -54,7 +70,7 @@ public class EmailService : IEmailService
             SaveToSentItems = true,
         };
 
-        await _graph.Users[_sendFromUserId].SendMail.PostAsync(requestBody, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _graph!.Users[_sendFromUserId!].SendMail.PostAsync(requestBody, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes)

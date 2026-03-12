@@ -10,43 +10,53 @@ using GraphList = Microsoft.Graph.Models.List;
 
 public class SharePointDigestService : ISharePointDigestService
 {
-    private readonly GraphServiceClient _graph;
-    private readonly string _configSitePath;
-    private readonly string _configListName;
+    private GraphServiceClient? _graph;
+    private string? _configSitePath;
+    private string? _configListName;
+    private readonly object _initLock = new();
 
     public SharePointDigestService()
     {
-        var tenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID") ?? "";
-        var clientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID") ?? "";
-        var clientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? "";
-        var missing = new List<string>();
-        if (string.IsNullOrEmpty(tenantId)) missing.Add("AZURE_TENANT_ID");
-        if (string.IsNullOrEmpty(clientId)) missing.Add("AZURE_CLIENT_ID");
-        if (string.IsNullOrEmpty(clientSecret)) missing.Add("AZURE_CLIENT_SECRET");
-        if (missing.Count > 0)
-            throw new InvalidOperationException("Add these Application settings in the Function App: " + string.Join(", ", missing));
+        // Do not validate here so the worker process can start; validate on first use.
+    }
 
-        var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
-        _graph = new GraphServiceClient(credential);
-
-        var configSiteUrl = Environment.GetEnvironmentVariable("CONFIG_SITE_URL") ?? "";
-        if (string.IsNullOrEmpty(configSiteUrl))
-            throw new InvalidOperationException("Add Application setting CONFIG_SITE_URL (e.g. https://tenant.sharepoint.com/sites/MySite).");
-        _configListName = Environment.GetEnvironmentVariable("CONFIG_LIST_NAME") ?? "Digest Subscriptions";
-        _configSitePath = GetSitePathFromUrl(configSiteUrl);
+    private void EnsureInitialized()
+    {
+        if (_graph != null) return;
+        lock (_initLock)
+        {
+            if (_graph != null) return;
+            var tenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID") ?? "";
+            var clientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID") ?? "";
+            var clientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? "";
+            var missing = new List<string>();
+            if (string.IsNullOrEmpty(tenantId)) missing.Add("AZURE_TENANT_ID");
+            if (string.IsNullOrEmpty(clientId)) missing.Add("AZURE_CLIENT_ID");
+            if (string.IsNullOrEmpty(clientSecret)) missing.Add("AZURE_CLIENT_SECRET");
+            if (missing.Count > 0)
+                throw new InvalidOperationException("Add these Application settings in the Function App: " + string.Join(", ", missing));
+            var configSiteUrl = Environment.GetEnvironmentVariable("CONFIG_SITE_URL") ?? "";
+            if (string.IsNullOrEmpty(configSiteUrl))
+                throw new InvalidOperationException("Add Application setting CONFIG_SITE_URL (e.g. https://tenant.sharepoint.com/sites/MySite).");
+            var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+            _graph = new GraphServiceClient(credential);
+            _configListName = Environment.GetEnvironmentVariable("CONFIG_LIST_NAME") ?? "Digest Subscriptions";
+            _configSitePath = GetSitePathFromUrl(configSiteUrl);
+        }
     }
 
     public async Task<IReadOnlyList<ConfigListItem>> GetConfigListItemsAsync(CancellationToken cancellationToken = default)
     {
-        var site = await GetSiteByPathAsync(_configSitePath, cancellationToken).ConfigureAwait(false);
+        EnsureInitialized();
+        var site = await GetSiteByPathAsync(_configSitePath!, cancellationToken).ConfigureAwait(false);
         if (site?.Id == null)
             return Array.Empty<ConfigListItem>();
 
-        var list = await GetListByNameAsync(site.Id, _configListName, cancellationToken).ConfigureAwait(false);
+        var list = await GetListByNameAsync(site.Id, _configListName!, cancellationToken).ConfigureAwait(false);
         if (list?.Id == null)
             return Array.Empty<ConfigListItem>();
 
-        var items = await _graph.Sites[site.Id].Lists[list.Id].Items
+        var items = await _graph!.Sites[site.Id].Lists[list.Id].Items
             .GetAsync(r =>
             {
                 r.QueryParameters.Expand = new[] { "fields" };
@@ -71,6 +81,7 @@ public class SharePointDigestService : ISharePointDigestService
 
     public async Task<IReadOnlyList<ChangedItem>> GetRecentChangesAsync(string listOrLibraryUrl, DateTimeOffset sinceUtc, CancellationToken cancellationToken = default)
     {
+        EnsureInitialized();
         var (sitePath, listName) = ParseListOrLibraryUrl(listOrLibraryUrl);
         if (string.IsNullOrEmpty(sitePath) || string.IsNullOrEmpty(listName))
             return Array.Empty<ChangedItem>();
@@ -88,7 +99,7 @@ public class SharePointDigestService : ISharePointDigestService
         var filter = $"fields/Modified ge '{filterDate}'";
 
         var allItems = new List<ListItem>();
-        var page = await _graph.Sites[site.Id].Lists[list.Id].Items.GetAsync(r =>
+        var page = await _graph!.Sites[site.Id].Lists[list.Id].Items.GetAsync(r =>
         {
             r.QueryParameters.Expand = new[] { "fields" };
             r.QueryParameters.Filter = filter;
@@ -198,7 +209,7 @@ public class SharePointDigestService : ISharePointDigestService
     {
         try
         {
-            return await _graph.Sites[hostAndPath].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false);
+            return await _graph!.Sites[hostAndPath].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -210,7 +221,7 @@ public class SharePointDigestService : ISharePointDigestService
     {
         try
         {
-            var lists = await _graph.Sites[siteId].Lists.GetAsync(r => r.QueryParameters.Top = 500, cancellationToken).ConfigureAwait(false);
+            var lists = await _graph!.Sites[siteId].Lists.GetAsync(r => r.QueryParameters.Top = 500, cancellationToken).ConfigureAwait(false);
             var match = lists?.Value?.FirstOrDefault(l =>
                 string.Equals(l.DisplayName, listName, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(l.Name, listName, StringComparison.OrdinalIgnoreCase));
