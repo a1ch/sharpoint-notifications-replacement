@@ -195,7 +195,7 @@ public class SharePointDigestService : ISharePointDigestService
     {
         try
         {
-            return await _graph.Sites[hostAndPath].GetAsync(cancellationToken).ConfigureAwait(false);
+            return await _graph.Sites[hostAndPath].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
