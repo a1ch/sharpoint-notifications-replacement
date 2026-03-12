@@ -22,7 +22,7 @@ public class EmailService : IEmailService
         // User or shared mailbox to send from (object ID or UPN). Requires Mail.Send application permission.
         _sendFromUserId = Environment.GetEnvironmentVariable("SEND_FROM_USER_ID") ?? "";
         if (string.IsNullOrEmpty(_sendFromUserId))
-            throw new InvalidOperationException("SEND_FROM_USER_ID must be set (object ID or user principal name of the mailbox to send from).");
+            throw new InvalidOperationException("Add Application setting SEND_FROM_USER_ID (object ID or UPN of the mailbox to send from).");
     }
 
     public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, CancellationToken cancellationToken = default)

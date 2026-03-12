@@ -19,16 +19,19 @@ public class SharePointDigestService : ISharePointDigestService
         var tenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID") ?? "";
         var clientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID") ?? "";
         var clientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? "";
-        if (string.IsNullOrEmpty(tenantId) || string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
-            throw new InvalidOperationException("AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET must be set.");
+        var missing = new List<string>();
+        if (string.IsNullOrEmpty(tenantId)) missing.Add("AZURE_TENANT_ID");
+        if (string.IsNullOrEmpty(clientId)) missing.Add("AZURE_CLIENT_ID");
+        if (string.IsNullOrEmpty(clientSecret)) missing.Add("AZURE_CLIENT_SECRET");
+        if (missing.Count > 0)
+            throw new InvalidOperationException("Add these Application settings in the Function App: " + string.Join(", ", missing));
 
         var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
         _graph = new GraphServiceClient(credential);
 
-        // Config list location: site that contains the list with Title + Email columns
         var configSiteUrl = Environment.GetEnvironmentVariable("CONFIG_SITE_URL") ?? "";
         if (string.IsNullOrEmpty(configSiteUrl))
-            throw new InvalidOperationException("CONFIG_SITE_URL must be set (e.g. https://tenant.sharepoint.com/sites/MySite).");
+            throw new InvalidOperationException("Add Application setting CONFIG_SITE_URL (e.g. https://tenant.sharepoint.com/sites/MySite).");
         _configListName = Environment.GetEnvironmentVariable("CONFIG_LIST_NAME") ?? "Digest Subscriptions";
         _configSitePath = GetSitePathFromUrl(configSiteUrl);
     }
