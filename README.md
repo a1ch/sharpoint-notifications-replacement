@@ -92,6 +92,8 @@ This repo is set up to deploy to [GitHub - a1ch/sharpoint-notifications-replacem
 
 After that, pushes to `main` will build and deploy the function. You can also run the workflow manually (**Actions** → **Deploy to Azure Function** → **Run workflow**).
 
+**If the build fails with errors about `IDictionary`/`IReadOnlyDictionary`, `GetByPath`, or `SendMailPostRequestBody`:** the workflow may be running from a fork or an older clone. Sync with the upstream repo: in your clone run `git fetch https://github.com/a1ch/sharpoint-notifications-replacement.git main` and then `git merge FETCH_HEAD` (or reset to that commit), then push. Ensure the workflow runs from the repo that has the latest `main` (check the "Verify repo and commit" step in the Actions log).
+
 ## License
 
 MIT.
