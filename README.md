@@ -95,6 +95,8 @@ After that, pushes to `main` will build and deploy the function. You can also ru
 
 **If the build fails with errors about `IDictionary`/`IReadOnlyDictionary`, `GetByPath`, or `SendMailPostRequestBody`:** the workflow may be running from a fork or an older clone. Sync with the upstream repo: in your clone run `git fetch https://github.com/a1ch/sharpoint-notifications-replacement.git main` and then `git merge FETCH_HEAD` (or reset to that commit), then push. Ensure the workflow runs from the repo that has the latest `main` (check the "Verify repo and commit" step in the Actions log).
 
+**If the function fails to start with "dotnet exited with code 150":** The app targets .NET 8 and runs framework-dependent (using the host’s runtime). In the Function App (Azure Portal): **Configuration** → **General settings** → set **Stack** to **.NET 8** and **Platform** to **.NET Isolated**. Ensure **Application settings** include `FUNCTIONS_WORKER_RUNTIME` = `dotnet-isolated`. Save and restart the Function App, then redeploy.
+
 ## License
 
 MIT.
