@@ -46,6 +46,14 @@ jobs:
       - name: Publish (self-contained linux-x64; publish restores/builds for RID in one step)
         run: dotnet publish --configuration Release --output '${{ runner.temp }}/publish' --runtime linux-x64 --self-contained true
 
+      - name: Login to Azure (required for RBAC deploy)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
       - name: Deploy to Azure Function
         uses: Azure/functions-action@v1
         with:

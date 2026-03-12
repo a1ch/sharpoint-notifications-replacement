@@ -81,8 +81,9 @@ This repo is set up to deploy to [GitHub - a1ch/sharpoint-notifications-replacem
 2. **Get a publish profile** from Azure:
    - **Function App** → **Overview** → **Download publish profile**.
 
-3. **Add GitHub secrets** for the repo:
-   - `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` – paste the full contents of the downloaded publish profile.
+3. **Add GitHub secrets** for the repo (deploy uses RBAC and needs Azure login):
+   - `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` – (optional) paste the full contents of the downloaded publish profile.
+   - For RBAC deploy, also add: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_SECRET` (from an app registration that has **Contributor** or **Website Contributor** on the Function App or its resource group).
 
 4. **Set the function app name** in the workflow:
    - Edit `.github/workflows/deploy-azure-function.yml`.
