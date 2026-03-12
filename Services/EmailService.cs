@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
+using Microsoft.Graph.Users.Item.SendMail;
 using SharepointDailyDigest.Models;
 
 namespace SharepointDailyDigest.Services;

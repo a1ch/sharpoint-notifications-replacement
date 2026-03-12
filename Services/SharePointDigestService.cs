@@ -100,7 +100,7 @@ public class SharePointDigestService : ISharePointDigestService
             var fields = item.Fields?.AdditionalData;
             if (fields == null) continue;
             var title = GetFieldString(fields, "Title") ?? GetFieldString(fields, "FileLeafRef") ?? "Item";
-            var modifiedObj = fields.GetValueOrDefault("Modified");
+            var modifiedObj = fields.TryGetValue("Modified", out var modVal) ? modVal : null;
             DateTimeOffset modified = default;
             if (modifiedObj is DateTimeOffset dto)
                 modified = dto;
@@ -117,9 +117,9 @@ public class SharePointDigestService : ISharePointDigestService
         return results;
     }
 
-    private static string? GetFieldString(IReadOnlyDictionary<string, object> fields, string name)
+    private static string? GetFieldString(IDictionary<string, object>? fields, string name)
     {
-        if (!fields.TryGetValue(name, out var o) || o == null)
+        if (fields == null || !fields.TryGetValue(name, out var o) || o == null)
             return null;
         if (o is string s)
             return s;
@@ -191,12 +191,9 @@ public class SharePointDigestService : ISharePointDigestService
 
     private async Task<Site?> GetSiteByPathAsync(string hostAndPath, CancellationToken cancellationToken)
     {
-        var parts = hostAndPath.IndexOf(':') >= 0 ? hostAndPath.Split(new[] { ':' }, 2) : new[] { "", hostAndPath };
-        var hostName = parts.Length == 2 ? parts[0] : "";
-        var path = parts.Length == 2 ? parts[1] : hostAndPath;
         try
         {
-            return await _graph.Sites.GetByPath(path, hostName).GetAsync(cancellationToken).ConfigureAwait(false);
+            return await _graph.Sites[hostAndPath].GetAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
