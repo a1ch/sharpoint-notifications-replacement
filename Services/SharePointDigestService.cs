@@ -6,6 +6,8 @@ using SharepointDailyDigest.Models;
 
 namespace SharepointDailyDigest.Services;
 
+using GraphList = Microsoft.Graph.Models.List;
+
 public class SharePointDigestService : ISharePointDigestService
 {
     private readonly GraphServiceClient _graph;
@@ -201,7 +203,7 @@ public class SharePointDigestService : ISharePointDigestService
         }
     }
 
-    private async Task<Microsoft.Graph.Models.List?> GetListByNameAsync(string siteId, string listName, CancellationToken cancellationToken)
+    private async Task<GraphList?> GetListByNameAsync(string siteId, string listName, CancellationToken cancellationToken)
     {
         try
         {
