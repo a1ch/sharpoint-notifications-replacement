@@ -201,7 +201,7 @@ public class SharePointDigestService : ISharePointDigestService
         }
     }
 
-    private async Task<List?> GetListByNameAsync(string siteId, string listName, CancellationToken cancellationToken)
+    private async Task<Microsoft.Graph.Models.List?> GetListByNameAsync(string siteId, string listName, CancellationToken cancellationToken)
     {
         try
         {
