@@ -97,6 +97,8 @@ After that, pushes to `main` will build and deploy the function. You can also ru
 
 **If the function fails to start with "dotnet exited with code 150":** The app targets .NET 8 and runs framework-dependent (using the host’s runtime). In the Function App (Azure Portal): **Configuration** → **General settings** → set **Stack** to **.NET 8** and **Platform** to **.NET Isolated**. Ensure **Application settings** include `FUNCTIONS_WORKER_RUNTIME` = `dotnet-isolated`. Save and restart the Function App, then redeploy.
 
+**"Node.js 20 actions are deprecated" warning:** The workflow sets `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'` so actions use Node 24. If you still see the warning, start a **new** workflow run (don’t re-run an old one); re-runs use the workflow from the original commit. The warning is harmless and will disappear when GitHub switches the default in 2026.
+
 ## License
 
 MIT.
