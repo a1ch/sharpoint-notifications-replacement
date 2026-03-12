@@ -46,8 +46,8 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release --no-restore
 
-      - name: Publish
-        run: dotnet publish --configuration Release --no-build --output '${{ runner.temp }}/publish'
+      - name: Publish (self-contained so host does not need .NET 8 runtime)
+        run: dotnet publish --configuration Release --no-build --output '${{ runner.temp }}/publish' --runtime linux-x64 --self-contained true
 
       - name: Deploy to Azure Function
         uses: Azure/functions-action@v1
