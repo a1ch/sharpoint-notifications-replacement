@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'   # Opt into Node.js 24 (Node 20 deprecated on runners)
   AZURE_FUNCTIONAPP_NAME: 'YOUR_FUNCTION_APP_NAME'   # Replace with your Azure Function App name
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
