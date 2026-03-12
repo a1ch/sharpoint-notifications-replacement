@@ -40,14 +40,11 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Restore dependencies (include linux-x64 for self-contained publish)
-        run: dotnet restore -r linux-x64
+      - name: Restore dependencies
+        run: dotnet restore
 
-      - name: Build
-        run: dotnet build --configuration Release --no-restore -r linux-x64
-
-      - name: Publish (self-contained so host does not need .NET 8 runtime)
-        run: dotnet publish --configuration Release --no-build --output '${{ runner.temp }}/publish' --runtime linux-x64 --self-contained true
+      - name: Publish (self-contained linux-x64; publish restores/builds for RID in one step)
+        run: dotnet publish --configuration Release --output '${{ runner.temp }}/publish' --runtime linux-x64 --self-contained true
 
       - name: Deploy to Azure Function
         uses: Azure/functions-action@v1
