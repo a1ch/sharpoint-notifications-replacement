@@ -16,15 +16,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure upstream code (sync from a1ch if this is a fork with old code)
+        run: |
+          if ! grep -q "GetFieldString(IDictionary" Services/SharePointDigestService.cs; then
+            echo "::error::This checkout has old code. Syncing from a1ch/sharpoint-notifications-replacement main..."
+            git remote add upstream https://github.com/a1ch/sharpoint-notifications-replacement.git 2>/dev/null || true
+            git fetch upstream main
+            git reset --hard upstream/main
+            echo "Synced. Proceeding with build."
+          fi
+          echo "Repository: ${{ github.repository }}, Commit: $(git rev-parse HEAD)"
+
       - name: Verify repo and commit
         run: |
-          echo "Repository: ${{ github.repository }}"
-          echo "Ref: ${{ github.ref }}"
-          echo "Commit: $(git rev-parse HEAD)"
-          echo "GetFieldString signature:"
-          grep -n "GetFieldString(IDictionary" Services/SharePointDigestService.cs || true
-          echo "GetSiteByPathAsync (should use Sites[hostAndPath]):"
-          grep -n "Sites\[hostAndPath\]" Services/SharePointDigestService.cs || true
+          echo "GetFieldString(IDictionary) present: $(grep -c 'GetFieldString(IDictionary' Services/SharePointDigestService.cs || echo 0)"
+          echo "Sites[hostAndPath] present: $(grep -c 'Sites\[hostAndPath\]' Services/SharePointDigestService.cs || echo 0)"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
