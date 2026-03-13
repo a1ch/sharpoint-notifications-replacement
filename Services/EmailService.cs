@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
@@ -108,7 +109,7 @@ public class EmailService : IEmailService
         {
             sb.Append("<li>");
             sb.Append("<a href=\"").Append(System.Net.WebUtility.HtmlEncode(c.WebUrl)).Append("\" style=\"color: ").Append(brandInfo?.AccentColorHex ?? "#0066cc").Append(";\">").Append(System.Net.WebUtility.HtmlEncode(c.Title)).Append("</a>");
-            sb.Append(" – ").Append(c.Modified.ToString("g"));
+            sb.Append(" – ").Append(FormatModifiedDate(c.Modified));
             if (!string.IsNullOrEmpty(c.ModifiedBy))
                 sb.Append(" (by ").Append(System.Net.WebUtility.HtmlEncode(c.ModifiedBy)).Append(")");
             sb.Append("</li>");
@@ -120,5 +121,16 @@ public class EmailService : IEmailService
 
         sb.Append("</body></html>");
         return sb.ToString();
+    }
+
+    /// <summary>Format modified date for email; shows "Unknown date" if unparsed (default).</summary>
+    private static string FormatModifiedDate(DateTimeOffset modified)
+    {
+        if (modified == default) return "Unknown date";
+        var formatted = modified.ToString("MMM d, yyyy h:mm tt", CultureInfo.InvariantCulture);
+        var offset = modified.Offset;
+        if (offset == TimeSpan.Zero)
+            return formatted + " UTC";
+        return formatted + " " + (offset >= TimeSpan.Zero ? "+" : "") + offset.ToString(@"hh\:mm", CultureInfo.InvariantCulture);
     }
 }

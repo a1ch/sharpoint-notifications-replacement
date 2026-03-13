@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Azure.Identity;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
@@ -133,12 +134,9 @@ public class SharePointDigestService : ISharePointDigestService
             var fields = item.Fields?.AdditionalData;
             if (fields == null) continue;
             var title = GetFieldString(fields, "Title") ?? GetFieldString(fields, "FileLeafRef") ?? "Item";
-            var modifiedObj = fields.TryGetValue("Modified", out var modVal) ? modVal : null;
             DateTimeOffset modified = default;
-            if (modifiedObj is DateTimeOffset dto)
-                modified = dto;
-            else if (modifiedObj is string s && DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
-                modified = parsed;
+            if (TryGetFieldValue(fields, "Modified", out var modifiedObj) && modifiedObj != null)
+                modified = ParseModifiedValue(modifiedObj) ?? default;
             var modifiedBy = GetFieldString(fields, "Editor") ?? GetFieldString(fields, "ModifiedBy");
             var webUrl = baseWebUrl;
             if (item.WebUrl != null)
@@ -148,6 +146,40 @@ public class SharePointDigestService : ISharePointDigestService
             results.Add(new ChangedItem(title, webUrl, modified, modifiedBy));
         }
         return results;
+    }
+
+    /// <summary>Parse Modified from Graph (DateTimeOffset, string, JsonElement, Json, or ToString). Uses RoundtripKind for ISO 8601.</summary>
+    private static DateTimeOffset? ParseModifiedValue(object modifiedObj)
+    {
+        if (modifiedObj is DateTimeOffset dto)
+            return dto;
+        if (modifiedObj is string s && TryParseDate(s, out var fromStr))
+            return fromStr;
+        if (modifiedObj is JsonElement je)
+        {
+            if (je.TryGetDateTimeOffset(out var fromJe)) return fromJe;
+            var raw = je.GetRawText().Trim('"');
+            if (TryParseDate(raw, out var fromRaw)) return fromRaw;
+        }
+        if (modifiedObj is Microsoft.Graph.Models.Json json && json.AdditionalData != null)
+        {
+            foreach (var kv in json.AdditionalData)
+            {
+                var str = kv.Value?.ToString()?.Trim('"');
+                if (!string.IsNullOrEmpty(str) && TryParseDate(str, out var p)) return p;
+            }
+        }
+        var fallback = modifiedObj.ToString();
+        if (!string.IsNullOrEmpty(fallback) && TryParseDate(fallback.Trim('"'), out var parsed)) return parsed;
+        return null;
+    }
+
+    private static bool TryParseDate(string? s, out DateTimeOffset result)
+    {
+        result = default;
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        return DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out result)
+            || DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out result);
     }
 
     private static string? GetFieldString(IDictionary<string, object>? fields, string name)

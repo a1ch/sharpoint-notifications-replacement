@@ -80,8 +80,9 @@ public class DailyDigestFunction
                 var end = listPart.IndexOf('/');
                 return end > 0 ? Uri.UnescapeDataString(listPart.Substring(0, end)) : Uri.UnescapeDataString(listPart);
             }
-            var segments = path.Split('/');
-            return segments.Length >= 3 ? Uri.UnescapeDataString(segments[^1]) : path;
+            var segments = path.TrimStart('/').Split('/');
+            var last = segments.Length > 0 ? segments[^1] : null;
+            return !string.IsNullOrEmpty(last) ? Uri.UnescapeDataString(last) : path;
         }
         catch
         {
