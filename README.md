@@ -84,6 +84,7 @@ This repo is set up to deploy to [GitHub - a1ch/sharpoint-notifications-replacem
 3. **Add GitHub secrets** for the repo (deploy uses RBAC and needs Azure login):
    - `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` – (optional) paste the full contents of the downloaded publish profile.
    - For RBAC deploy, also add: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_SECRET` (from an app registration that has **Contributor** or **Website Contributor** on the Function App or its resource group).
+   - Optional: `AZURE_FUNCTIONAPP_RESOURCE_GROUP` – if set, the workflow will ensure `FUNCTIONS_WORKER_RUNTIME=dotnet-isolated` and `WEBSITE_USE_PLACEHOLDER_DOTNETISOLATED=1` on the Function App after each deploy (helps avoid worker startup failures).
 
 4. **Set the function app name** in the workflow:
    - Edit `.github/workflows/deploy-azure-function.yml`.
@@ -95,7 +96,14 @@ After that, pushes to `main` will build and deploy the function. You can also ru
 
 **If the build fails with errors about `IDictionary`/`IReadOnlyDictionary`, `GetByPath`, or `SendMailPostRequestBody`:** the workflow may be running from a fork or an older clone. Sync with the upstream repo: in your clone run `git fetch https://github.com/a1ch/sharpoint-notifications-replacement.git main` and then `git merge FETCH_HEAD` (or reset to that commit), then push. Ensure the workflow runs from the repo that has the latest `main` (check the "Verify repo and commit" step in the Actions log).
 
-**If the function fails to start with "dotnet exited with code 150":** The app targets .NET 8 and runs framework-dependent (using the host’s runtime). In the Function App (Azure Portal): **Configuration** → **General settings** → set **Stack** to **.NET 8** and **Platform** to **.NET Isolated**. Ensure **Application settings** include `FUNCTIONS_WORKER_RUNTIME` = `dotnet-isolated`. Save and restart the Function App, then redeploy.
+**If the function fails to start with `System.AggregateException` / `WorkerProcessExitException` or "dotnet exited with code 150":** The isolated worker process is exiting before the host can load function metadata—usually because the Function App is not configured for .NET 8 Isolated. In the Azure Portal:
+
+1. Open the Function App → **Configuration** → **General settings**.
+2. Set **Stack** to **.NET 8** and **Platform** (or "Platform configuration") to **.NET Isolated**. Save.
+3. In **Application settings**, ensure `FUNCTIONS_WORKER_RUNTIME` = `dotnet-isolated`. If you use a **Consumption** plan, add `WEBSITE_USE_PLACEHOLDER_DOTNETISOLATED` = `1`.
+4. Save, **restart** the Function App, then redeploy (or run the deploy workflow again).
+
+To see the actual worker exit reason: use **Monitoring** → **Log stream**, restart the app, and look for lines starting with `[Worker startup failed]` or `[Inner]` (the app logs the real exception to stderr). You can also check **Development** → **Advanced Tools (Kudu)** → **Debug console** → **CMD** → `LogFiles` for the latest worker logs.
 
 **"Node.js 20 actions are deprecated" warning:** The workflow sets `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'` so actions use Node 24. If you still see the warning, start a **new** workflow run (don’t re-run an old one); re-runs use the workflow from the original commit. The warning is harmless and will disappear when GitHub switches the default in 2026.
 
