@@ -52,14 +52,17 @@ public class EmailService : IEmailService
         }
     }
 
-    public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, CancellationToken cancellationToken = default)
+    public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, CancellationToken cancellationToken = default)
     {
         if (changes.Count == 0)
             return;
         EnsureInitialized();
 
-        var subject = $"SharePoint digest: {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours";
-        var body = BuildDigestHtml(listOrLibraryName, changes, brand);
+        var hasSiteName = !string.IsNullOrWhiteSpace(siteName);
+        var subject = hasSiteName
+            ? $"SharePoint digest: {siteName} – {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours"
+            : $"SharePoint digest: {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours";
+        var body = BuildDigestHtml(listOrLibraryName, changes, brand, siteName);
 
         var requestBody = new SendMailPostRequestBody
         {
@@ -85,41 +88,53 @@ public class EmailService : IEmailService
         await _graph!.Users[_sendFromUserId!].SendMail.PostAsync(requestBody, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null)
+    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null)
     {
         var sb = new StringBuilder();
         var brandInfo = !string.IsNullOrWhiteSpace(brand) && Brands.TryGetValue(brand.Trim(), out var b) ? b : null;
+        var accent = brandInfo?.AccentColorHex ?? "#2563eb";
+        var hasSiteName = !string.IsNullOrWhiteSpace(siteName);
 
-        sb.Append("<html><body style=\"font-family: Segoe UI, Arial, sans-serif; color: #333; max-width: 600px;\">");
+        // Email-safe: inline styles, no external CSS
+        sb.Append("<html><body style=\"margin:0; padding:0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 15px; line-height: 1.5; color: #1e293b; background: #f1f5f9;\">");
+        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background: #f1f5f9; padding: 24px 16px;\"><tr><td align=\"center\">");
+        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width: 560px; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.06); overflow: hidden;\"><tr><td>");
 
-        if (brandInfo != null)
-        {
-            sb.Append("<div style=\"border-bottom: 4px solid ").Append(brandInfo.AccentColorHex).Append("; padding-bottom: 12px; margin-bottom: 20px;\">");
-            if (!string.IsNullOrEmpty(brandInfo.LogoUrl))
-                sb.Append("<img src=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.LogoUrl)).Append("\" alt=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append("\" style=\"max-height: 48px; max-width: 220px; display: block; margin-bottom: 8px;\" />");
-            sb.Append("<span style=\"font-size: 22px; font-weight: bold; color: ").Append(brandInfo.AccentColorHex).Append(";\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append("</span>");
-            if (!string.IsNullOrEmpty(brandInfo.Tagline))
-                sb.Append("<br/><span style=\"font-size: 12px; color: #666;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.Tagline)).Append("</span>");
-            sb.Append("</div>");
-        }
+        // Header
+        sb.Append("<div style=\"background: ").Append(accent).Append("; color: #ffffff; padding: 24px 28px;\">");
+        if (brandInfo != null && !string.IsNullOrEmpty(brandInfo.LogoUrl))
+            sb.Append("<img src=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.LogoUrl)).Append("\" alt=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append("\" style=\"max-height: 40px; max-width: 180px; display: block; margin-bottom: 12px;\" />");
+        sb.Append("<div style=\"font-size: 22px; font-weight: 700; letter-spacing: -0.02em;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo?.DisplayName ?? "SharePoint Digest")).Append("</div>");
+        if (brandInfo?.Tagline != null)
+            sb.Append("<div style=\"font-size: 13px; opacity: 0.9; margin-top: 4px;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.Tagline)).Append("</div>");
+        sb.Append("</div>");
 
-        sb.Append("<p>Summary of new or changed items in the past 24 hours for <strong>").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong>.</p>");
-        sb.Append("<ul>");
+        // Body
+        sb.Append("<div style=\"padding: 28px;\">");
+        if (hasSiteName)
+            sb.Append("<p style=\"margin: 0 0 6px; font-size: 13px; color: #64748b;\">").Append(System.Net.WebUtility.HtmlEncode(siteName!)).Append("</p>");
+        sb.Append("<p style=\"margin: 0 0 20px; font-size: 15px; color: #475569;\">New or changed in the last 24 hours in <strong style=\"color: #1e293b;\">").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong></p>");
+
         foreach (var c in changes)
         {
-            sb.Append("<li>");
-            sb.Append("<a href=\"").Append(System.Net.WebUtility.HtmlEncode(c.WebUrl)).Append("\" style=\"color: ").Append(brandInfo?.AccentColorHex ?? "#0066cc").Append(";\">").Append(System.Net.WebUtility.HtmlEncode(c.Title)).Append("</a>");
-            sb.Append(" – ").Append(FormatModifiedDate(c.Modified));
+            sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-bottom: 12px; background: #f8fafc; border-radius: 8px; border-left: 4px solid ").Append(accent).Append(";\"><tr><td style=\"padding: 14px 16px;\">");
+            sb.Append("<a href=\"").Append(System.Net.WebUtility.HtmlEncode(c.WebUrl)).Append("\" style=\"font-weight: 600; color: ").Append(accent).Append("; text-decoration: none; font-size: 15px;\">").Append(System.Net.WebUtility.HtmlEncode(c.Title)).Append("</a>");
+            sb.Append("<div style=\"font-size: 13px; color: #64748b; margin-top: 4px;\">");
+            sb.Append(FormatModifiedDate(c.Modified));
             if (!string.IsNullOrEmpty(c.ModifiedBy))
-                sb.Append(" (by ").Append(System.Net.WebUtility.HtmlEncode(c.ModifiedBy)).Append(")");
-            sb.Append("</li>");
+                sb.Append(" · ").Append(System.Net.WebUtility.HtmlEncode(c.ModifiedBy));
+            sb.Append("</div>");
+            sb.Append("</td></tr></table>");
         }
-        sb.Append("</ul>");
 
-        if (brandInfo != null)
-            sb.Append("<p style=\"margin-top: 24px; font-size: 11px; color: #888;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append(" · SharePoint Daily Digest</p>");
+        sb.Append("</div>");
 
-        sb.Append("</body></html>");
+        // Footer
+        sb.Append("<div style=\"padding: 16px 28px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8;\">");
+        sb.Append(System.Net.WebUtility.HtmlEncode(brandInfo?.DisplayName ?? "SharePoint")).Append(" · Daily Digest");
+        sb.Append("</div>");
+
+        sb.Append("</td></tr></table></td></tr></table></body></html>");
         return sb.ToString();
     }
 

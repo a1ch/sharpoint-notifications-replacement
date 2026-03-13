@@ -53,8 +53,9 @@ public class DailyDigestFunction
             {
                 var changes = await _sharePoint.GetRecentChangesAsync(row.ListOrLibraryUrl, since, cancellationToken).ConfigureAwait(false);
                 var listName = GetListNameFromUrl(row.ListOrLibraryUrl);
+                var siteName = GetSiteNameFromUrl(row.ListOrLibraryUrl);
                 if (changes.Count > 0)
-                    await _email.SendDigestAsync(row.Email, listName, changes, row.Brand, cancellationToken).ConfigureAwait(false);
+                    await _email.SendDigestAsync(row.Email, listName, changes, row.Brand, siteName, cancellationToken).ConfigureAwait(false);
                 else
                     _logger.LogInformation("No changes for {Url}, skipping email to {Email}", row.ListOrLibraryUrl, row.Email);
             }
@@ -87,6 +88,27 @@ public class DailyDigestFunction
         catch
         {
             return url;
+        }
+    }
+
+    private static string GetSiteNameFromUrl(string url)
+    {
+        try
+        {
+            var path = new Uri(url).AbsolutePath.TrimEnd('/');
+            var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
+            if (sitesIndex >= 0)
+            {
+                var afterSites = path.Substring(sitesIndex + 7);
+                var nextSlash = afterSites.IndexOf('/');
+                var segment = nextSlash > 0 ? afterSites.Substring(0, nextSlash) : afterSites;
+                return !string.IsNullOrEmpty(segment) ? Uri.UnescapeDataString(segment) : "SharePoint";
+            }
+            return "Root";
+        }
+        catch
+        {
+            return "";
         }
     }
 }
