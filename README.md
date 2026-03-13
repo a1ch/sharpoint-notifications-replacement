@@ -54,9 +54,11 @@ Configure the following in **Azure Function App** → **Configuration** → **Ap
 2. Add two single-line text columns (if not already present):
    - **Title** – used for the list/library URL.
    - **Email** – used for the recipient email.
+   - **Brand** (optional) – one of **Streamflo**, **Masterflo**, **Dycor** to style the digest email (case-insensitive).
 3. Add one row per subscription:
    - **Title**: full URL to the list or library (e.g. from “Copy link” on the list or library).
    - **Email**: address to receive the daily digest for that list/library.
+   - **Brand**: Streamflo, Masterflo, or Dycor (optional).
 
 ## Timer and time zone
 

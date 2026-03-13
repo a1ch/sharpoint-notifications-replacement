@@ -6,8 +6,19 @@ using SharepointDailyDigest.Models;
 
 namespace SharepointDailyDigest.Services;
 
+/// <summary>Brand styling for digest emails (Streamflo, Masterflo, Dycor).</summary>
+internal record BrandInfo(string DisplayName, string AccentColorHex, string? LogoUrl = null, string? Tagline = null);
+
 public class EmailService : IEmailService
 {
+    private static readonly Dictionary<string, BrandInfo> Brands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Streamflo"] = new BrandInfo("Stream-Flo", "#003366", "https://streamflo.com/wp-content/themes/streamflo/images/logo.jpg", null),
+        ["Stream-Flo"] = new BrandInfo("Stream-Flo", "#003366", "https://streamflo.com/wp-content/themes/streamflo/images/logo.jpg", null),
+        ["Masterflo"] = new BrandInfo("Master Flo", "#0066b3", "https://masterflo.com/wp-content/themes/masterflo/images/logo.png", "A Lifetime of Uptime"),
+        ["Master Flo"] = new BrandInfo("Master Flo", "#0066b3", "https://masterflo.com/wp-content/themes/masterflo/images/logo.png", "A Lifetime of Uptime"),
+        ["Dycor"] = new BrandInfo("Dycor", "#0d7a7a", "https://dycor.com/wp-content/uploads/2020/01/dycor-logo-dark-220.png", "Data Acquisition, Controls, Innovation and Technology"),
+    };
     private GraphServiceClient? _graph;
     private string? _sendFromUserId;
     private readonly object _initLock = new();
@@ -40,14 +51,14 @@ public class EmailService : IEmailService
         }
     }
 
-    public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, CancellationToken cancellationToken = default)
+    public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, CancellationToken cancellationToken = default)
     {
         if (changes.Count == 0)
             return;
         EnsureInitialized();
 
         var subject = $"SharePoint digest: {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours";
-        var body = BuildDigestHtml(listOrLibraryName, changes);
+        var body = BuildDigestHtml(listOrLibraryName, changes, brand);
 
         var requestBody = new SendMailPostRequestBody
         {
@@ -73,22 +84,41 @@ public class EmailService : IEmailService
         await _graph!.Users[_sendFromUserId!].SendMail.PostAsync(requestBody, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes)
+    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null)
     {
         var sb = new StringBuilder();
-        sb.Append("<html><body>");
-        sb.Append($"<p>Summary of new or changed items in the past 24 hours for <strong>").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong>.</p>");
+        var brandInfo = !string.IsNullOrWhiteSpace(brand) && Brands.TryGetValue(brand.Trim(), out var b) ? b : null;
+
+        sb.Append("<html><body style=\"font-family: Segoe UI, Arial, sans-serif; color: #333; max-width: 600px;\">");
+
+        if (brandInfo != null)
+        {
+            sb.Append("<div style=\"border-bottom: 4px solid ").Append(brandInfo.AccentColorHex).Append("; padding-bottom: 12px; margin-bottom: 20px;\">");
+            if (!string.IsNullOrEmpty(brandInfo.LogoUrl))
+                sb.Append("<img src=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.LogoUrl)).Append("\" alt=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append("\" style=\"max-height: 48px; max-width: 220px; display: block; margin-bottom: 8px;\" />");
+            sb.Append("<span style=\"font-size: 22px; font-weight: bold; color: ").Append(brandInfo.AccentColorHex).Append(";\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append("</span>");
+            if (!string.IsNullOrEmpty(brandInfo.Tagline))
+                sb.Append("<br/><span style=\"font-size: 12px; color: #666;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.Tagline)).Append("</span>");
+            sb.Append("</div>");
+        }
+
+        sb.Append("<p>Summary of new or changed items in the past 24 hours for <strong>").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong>.</p>");
         sb.Append("<ul>");
         foreach (var c in changes)
         {
             sb.Append("<li>");
-            sb.Append("<a href=\"").Append(System.Net.WebUtility.HtmlEncode(c.WebUrl)).Append("\">").Append(System.Net.WebUtility.HtmlEncode(c.Title)).Append("</a>");
+            sb.Append("<a href=\"").Append(System.Net.WebUtility.HtmlEncode(c.WebUrl)).Append("\" style=\"color: ").Append(brandInfo?.AccentColorHex ?? "#0066cc").Append(";\">").Append(System.Net.WebUtility.HtmlEncode(c.Title)).Append("</a>");
             sb.Append(" – ").Append(c.Modified.ToString("g"));
             if (!string.IsNullOrEmpty(c.ModifiedBy))
                 sb.Append(" (by ").Append(System.Net.WebUtility.HtmlEncode(c.ModifiedBy)).Append(")");
             sb.Append("</li>");
         }
-        sb.Append("</ul></body></html>");
+        sb.Append("</ul>");
+
+        if (brandInfo != null)
+            sb.Append("<p style=\"margin-top: 24px; font-size: 11px; color: #888;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append(" · SharePoint Daily Digest</p>");
+
+        sb.Append("</body></html>");
         return sb.ToString();
     }
 }

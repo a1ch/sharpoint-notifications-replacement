@@ -54,7 +54,7 @@ public class DailyDigestFunction
                 var changes = await _sharePoint.GetRecentChangesAsync(row.ListOrLibraryUrl, since, cancellationToken).ConfigureAwait(false);
                 var listName = GetListNameFromUrl(row.ListOrLibraryUrl);
                 if (changes.Count > 0)
-                    await _email.SendDigestAsync(row.Email, listName, changes, cancellationToken).ConfigureAwait(false);
+                    await _email.SendDigestAsync(row.Email, listName, changes, row.Brand, cancellationToken).ConfigureAwait(false);
                 else
                     _logger.LogInformation("No changes for {Url}, skipping email to {Email}", row.ListOrLibraryUrl, row.Email);
             }

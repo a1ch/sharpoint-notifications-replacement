@@ -1,6 +1,7 @@
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using SharepointDailyDigest.Services;
 
 try
@@ -23,7 +24,7 @@ try
                     Console.Error.WriteLine($"[Application Insights] Skipped: {aiEx.Message}");
                 }
             }
-            services.AddSingleton<ISharePointDigestService>(_ => new SharePointDigestService());
+            services.AddSingleton<ISharePointDigestService>(sp => new SharePointDigestService(sp.GetService<ILoggerFactory>()));
             services.AddSingleton<IEmailService>(_ => new EmailService());
         })
         .Build();

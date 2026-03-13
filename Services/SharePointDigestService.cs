@@ -2,6 +2,7 @@ using System.Globalization;
 using Azure.Identity;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
+using Microsoft.Extensions.Logging;
 using SharepointDailyDigest.Models;
 
 namespace SharepointDailyDigest.Services;
@@ -12,12 +13,14 @@ public class SharePointDigestService : ISharePointDigestService
 {
     private GraphServiceClient? _graph;
     private string? _configSitePath;
+    private string? _configSiteUrl;
     private string? _configListName;
     private readonly object _initLock = new();
+    private readonly ILogger<SharePointDigestService>? _logger;
 
-    public SharePointDigestService()
+    public SharePointDigestService(ILoggerFactory? loggerFactory = null)
     {
-        // Do not validate here so the worker process can start; validate on first use.
+        _logger = loggerFactory?.CreateLogger<SharePointDigestService>();
     }
 
     private void EnsureInitialized()
@@ -41,6 +44,7 @@ public class SharePointDigestService : ISharePointDigestService
             var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
             _graph = new GraphServiceClient(credential);
             _configListName = Environment.GetEnvironmentVariable("CONFIG_LIST_NAME") ?? "Digest Subscriptions";
+            _configSiteUrl = configSiteUrl;
             _configSitePath = GetSitePathFromUrl(configSiteUrl);
         }
     }
@@ -50,11 +54,17 @@ public class SharePointDigestService : ISharePointDigestService
         EnsureInitialized();
         var site = await GetSiteByPathAsync(_configSitePath!, cancellationToken).ConfigureAwait(false);
         if (site?.Id == null)
+        {
+            _logger?.LogWarning("Config site not found. CONFIG_SITE_URL={ConfigSiteUrl} (resolved to path: {SitePath}). Check URL and app permission Sites.Read.All.", _configSiteUrl, _configSitePath);
             return Array.Empty<ConfigListItem>();
+        }
 
         var list = await GetListByNameAsync(site.Id, _configListName!, cancellationToken).ConfigureAwait(false);
         if (list?.Id == null)
+        {
+            _logger?.LogWarning("Config list '{ListName}' not found on site. Check CONFIG_LIST_NAME and that the list exists.", _configListName);
             return Array.Empty<ConfigListItem>();
+        }
 
         var items = await _graph!.Sites[site.Id].Lists[list.Id].Items
             .GetAsync(r =>
@@ -74,8 +84,15 @@ public class SharePointDigestService : ISharePointDigestService
             var email = GetFieldString(fields, "Email");
             if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(email))
                 continue;
-            result.Add(new ConfigListItem(title.Trim(), email.Trim()));
+            var brand = GetFieldString(fields, "Brand");
+            var brandTrimmed = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim();
+            result.Add(new ConfigListItem(title.Trim(), email.Trim(), brandTrimmed));
         }
+
+        var totalRows = items.Value?.Count ?? 0;
+        if (result.Count == 0 && totalRows > 0)
+            _logger?.LogInformation("Config list has {Total} row(s) but none with both Title and Email. Ensure columns are named 'Title' and 'Email'.", totalRows);
+
         return result;
     }
 
@@ -135,13 +152,32 @@ public class SharePointDigestService : ISharePointDigestService
 
     private static string? GetFieldString(IDictionary<string, object>? fields, string name)
     {
-        if (fields == null || !fields.TryGetValue(name, out var o) || o == null)
+        if (fields == null)
+            return null;
+        if (!TryGetFieldValue(fields, name, out var o) || o == null)
             return null;
         if (o is string s)
             return s;
         if (o is Microsoft.Graph.Models.Json j && j.AdditionalData?.TryGetValue("displayName", out var dn) == true)
             return dn?.ToString();
         return o.ToString();
+    }
+
+    private static bool TryGetFieldValue(IDictionary<string, object> fields, string name, out object? value)
+    {
+        value = null;
+        if (fields.TryGetValue(name, out var o))
+        {
+            value = o;
+            return true;
+        }
+        var key = fields.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
+        if (key != null && fields.TryGetValue(key, out var o2))
+        {
+            value = o2;
+            return true;
+        }
+        return false;
     }
 
     private static string GetSitePathFromUrl(string url)
@@ -159,6 +195,9 @@ public class SharePointDigestService : ISharePointDigestService
                 var sitePath = nextSlash > 0 ? afterSites.Substring(0, nextSlash) : afterSites;
                 return $"{uri.Host}:{sitePath}";
             }
+            // Root site: Graph expects host + ":/" + server-relative path, e.g. host:/sites/root
+            if (string.IsNullOrEmpty(path) || path == "/")
+                return $"{uri.Host}:/sites/root";
             return $"{uri.Host}:{path}";
         }
         catch
@@ -173,31 +212,51 @@ public class SharePointDigestService : ISharePointDigestService
         {
             var uri = new Uri(url);
             var path = uri.AbsolutePath.TrimEnd('/');
-            // .../sites/SiteName/Lists/ListName/... or .../sites/SiteName/ListName/...
             var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
-            if (sitesIndex < 0)
-                return ("", "");
 
-            var afterSites = path.Substring(sitesIndex);
-            var listName = "";
-            var listsIndex = afterSites.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
-            if (listsIndex >= 0)
+            // Root site: e.g. /Shared Documents or /Lists/ListName
+            if (sitesIndex < 0)
             {
-                var listPart = afterSites.Substring(listsIndex + 7);
+                if (string.IsNullOrEmpty(path) || path == "/")
+                    return ("", "");
+                var sitePath = $"{uri.Host}:/sites/root";
+                var listName = "";
+                var listsIndex = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
+                if (listsIndex >= 0)
+                {
+                    var listPart = path.Substring(listsIndex + 7);
+                    var end = listPart.IndexOf('/');
+                    listName = end > 0 ? Uri.UnescapeDataString(listPart.Substring(0, end)) : Uri.UnescapeDataString(listPart);
+                }
+                else
+                {
+                    var segments = path.TrimStart('/').Split('/');
+                    listName = segments.Length >= 1 ? Uri.UnescapeDataString(segments[0]) : "";
+                }
+                return (sitePath, listName);
+            }
+
+            // .../sites/SiteName/Lists/ListName/... or .../sites/SiteName/ListName/...
+            var afterSites = path.Substring(sitesIndex);
+            var listName2 = "";
+            var listsIndex2 = afterSites.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
+            if (listsIndex2 >= 0)
+            {
+                var listPart = afterSites.Substring(listsIndex2 + 7);
                 var end = listPart.IndexOf('/');
-                listName = end > 0 ? Uri.UnescapeDataString(listPart.Substring(0, end)) : Uri.UnescapeDataString(listPart);
+                listName2 = end > 0 ? Uri.UnescapeDataString(listPart.Substring(0, end)) : Uri.UnescapeDataString(listPart);
             }
             else
             {
                 var segments = afterSites.Split('/');
                 if (segments.Length >= 3)
-                    listName = Uri.UnescapeDataString(segments[2]);
+                    listName2 = Uri.UnescapeDataString(segments[2]);
             }
             var sitePathEnd = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
             if (sitePathEnd < 0)
                 sitePathEnd = path.Length;
-            var sitePath = $"{uri.Host}:{path.Substring(0, sitePathEnd)}";
-            return (sitePath, listName);
+            var sitePath2 = $"{uri.Host}:{path.Substring(0, sitePathEnd)}";
+            return (sitePath2, listName2);
         }
         catch
         {
@@ -207,14 +266,28 @@ public class SharePointDigestService : ISharePointDigestService
 
     private async Task<Site?> GetSiteByPathAsync(string hostAndPath, CancellationToken cancellationToken)
     {
-        try
+        var isRoot = hostAndPath.EndsWith(":/sites/root", StringComparison.OrdinalIgnoreCase);
+        var hostname = isRoot ? hostAndPath.AsSpan(0, hostAndPath.IndexOf(":/", StringComparison.Ordinal)).ToString() : null;
+
+        // Tenant root: try "root" first (many tenants only accept this), then hostname
+        var toTry = isRoot ? new[] { "root", hostname! } : new[] { hostAndPath };
+
+        Exception? lastEx = null;
+        foreach (var siteId in toTry)
         {
-            return await _graph!.Sites[hostAndPath].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(siteId)) continue;
+            try
+            {
+                return await _graph!.Sites[siteId].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                lastEx = ex;
+            }
         }
-        catch
-        {
-            return null;
-        }
+
+        _logger?.LogWarning(lastEx, "GetSiteByPathAsync failed for root site (tried 'root' and hostname). Ensure Microsoft Graph permission Sites.Read.All (Application) is granted with admin consent.");
+        return null;
     }
 
     private async Task<GraphList?> GetListByNameAsync(string siteId, string listName, CancellationToken cancellationToken)
