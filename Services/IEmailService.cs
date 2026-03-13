@@ -4,5 +4,5 @@ namespace SharepointDailyDigest.Services;
 
 public interface IEmailService
 {
-    Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, CancellationToken cancellationToken = default);
+    Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, string? listOrLibraryUrl = null, CancellationToken cancellationToken = default);
 }

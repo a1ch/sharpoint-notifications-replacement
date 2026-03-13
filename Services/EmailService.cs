@@ -52,7 +52,7 @@ public class EmailService : IEmailService
         }
     }
 
-    public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, CancellationToken cancellationToken = default)
+    public async Task SendDigestAsync(string toEmail, string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, string? listOrLibraryUrl = null, CancellationToken cancellationToken = default)
     {
         if (changes.Count == 0)
             return;
@@ -62,7 +62,7 @@ public class EmailService : IEmailService
         var subject = hasSiteName
             ? $"SharePoint digest: {siteName} – {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours"
             : $"SharePoint digest: {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours";
-        var body = BuildDigestHtml(listOrLibraryName, changes, brand, siteName);
+        var body = BuildDigestHtml(listOrLibraryName, changes, brand, siteName, listOrLibraryUrl);
 
         var requestBody = new SendMailPostRequestBody
         {
@@ -88,12 +88,13 @@ public class EmailService : IEmailService
         await _graph!.Users[_sendFromUserId!].SendMail.PostAsync(requestBody, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null)
+    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, string? listOrLibraryUrl = null)
     {
         var sb = new StringBuilder();
         var brandInfo = !string.IsNullOrWhiteSpace(brand) && Brands.TryGetValue(brand.Trim(), out var b) ? b : null;
         var accent = brandInfo?.AccentColorHex ?? "#2563eb";
         var hasSiteName = !string.IsNullOrWhiteSpace(siteName);
+        var hasLibraryUrl = !string.IsNullOrWhiteSpace(listOrLibraryUrl);
 
         // Email-safe: inline styles, no external CSS
         sb.Append("<html><body style=\"margin:0; padding:0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 15px; line-height: 1.5; color: #1e293b; background: #f1f5f9;\">");
@@ -113,7 +114,11 @@ public class EmailService : IEmailService
         sb.Append("<div style=\"padding: 28px;\">");
         if (hasSiteName)
             sb.Append("<p style=\"margin: 0 0 6px; font-size: 13px; color: #64748b;\">").Append(System.Net.WebUtility.HtmlEncode(siteName!)).Append("</p>");
-        sb.Append("<p style=\"margin: 0 0 20px; font-size: 15px; color: #475569;\">New or changed in the last 24 hours in <strong style=\"color: #1e293b;\">").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong></p>");
+        sb.Append("<p style=\"margin: 0 0 12px; font-size: 15px; color: #475569;\">New or changed in the last 24 hours in <strong style=\"color: #1e293b;\">").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong></p>");
+        if (hasLibraryUrl)
+            sb.Append("<p style=\"margin: 0 0 20px; font-size: 14px;\"><a href=\"").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryUrl)).Append("\" style=\"color: ").Append(accent).Append("; font-weight: 600; text-decoration: none;\">Open ").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append(" →</a></p>");
+        else
+            sb.Append("<p style=\"margin: 0 0 20px;\"></p>");
 
         foreach (var c in changes)
         {

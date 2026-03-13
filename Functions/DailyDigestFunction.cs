@@ -55,7 +55,7 @@ public class DailyDigestFunction
                 var listName = GetListNameFromUrl(row.ListOrLibraryUrl);
                 var siteName = GetSiteNameFromUrl(row.ListOrLibraryUrl);
                 if (changes.Count > 0)
-                    await _email.SendDigestAsync(row.Email, listName, changes, row.Brand, siteName, cancellationToken).ConfigureAwait(false);
+                    await _email.SendDigestAsync(row.Email, listName, changes, row.Brand, siteName, row.ListOrLibraryUrl, cancellationToken).ConfigureAwait(false);
                 else
                     _logger.LogInformation("No changes for {Url}, skipping email to {Email}", row.ListOrLibraryUrl, row.Email);
             }
