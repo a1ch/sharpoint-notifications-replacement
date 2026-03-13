@@ -3,6 +3,7 @@ bin/
 obj/
 .vs/
 *.user
+# Never commit – contains secrets (copy from local.settings.json.example)
 local.settings.json
 appsettings.json
 *.pubxml

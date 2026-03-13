@@ -68,9 +68,27 @@ To use your local time (e.g. 8:00 AM Eastern):
 
 ## Local development
 
-1. Install [Azure Functions Core Tools](https://learn.microsoft.com/en-us/azure/azure-functions/functions-run-local) and ensure the storage emulator is running (or set `AzureWebJobsStorage` to a real storage connection string).
-2. Copy `local.settings.json` and fill in the values (do not commit real secrets).
-3. Run: `func start` from the project folder.
+Run the function locally to reproduce and debug startup/runtime errors (e.g. `WorkerProcessExitException`). You’ll see worker output and any `[Worker startup failed]` messages in the same console.
+
+1. **.NET 8 SDK** – Ensure the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) is installed (`dotnet --version`).
+2. **Azure Functions Core Tools v4** – Install one of:
+   - **npm:** `npm install -g azure-functions-core-tools@4`
+   - **winget:** `winget install Microsoft.Azure.FunctionsCoreTools`
+   - Or [MSI](https://learn.microsoft.com/en-us/azure/azure-functions/functions-run-local#install-the-azure-functions-core-tools).
+3. **Local settings** – Copy the template and add your values (do not commit real secrets):
+   ```bash
+   copy local.settings.json.example local.settings.json
+   ```
+   Edit `local.settings.json`: set `AzureWebJobsStorage` to a real Azure Storage connection string (or run [Azurite](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite) and keep `UseDevelopmentStorage=true`). Fill in `AZURE_*`, `CONFIG_SITE_URL`, `SEND_FROM_USER_ID` for full runs.  
+   **Note:** `local.settings.json` is in `.gitignore` and must never be committed. Optional: copy `.githooks/pre-commit` to `.git/hooks/pre-commit` to block committing it by mistake.
+4. **Build and run** – From the project folder:
+   ```bash
+   dotnet build
+   func start
+   ```
+   Or use the script: `.\run-local.ps1` (PowerShell). The timer runs on its schedule; to trigger immediately you can use the **Run** button in the Azure Functions CLI output or call the function from the portal later.
+
+   **"The listener for function 'DailyDigest' was unable to start" / connection refused to 127.0.0.1:10000:** The host needs storage for the timer trigger. Either (a) set `AzureWebJobsStorage` in `local.settings.json` to a **real Azure Storage connection string** (from Azure Portal → your storage account → Access keys), or (b) run the storage emulator [Azurite](https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite) (e.g. `docker run -p 10000:10000 -p 10001:10001 -p 10002:10002 mcr.microsoft.com/azure-storage/azurite` or `npx azurite --silent --location c:\azurite --debug c:\azurite\debug.log`) so `UseDevelopmentStorage=true` can connect.
 
 ## Deploy to Azure from GitHub
 

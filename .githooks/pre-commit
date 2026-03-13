@@ -1,0 +1,8 @@
+#!/bin/sh
+# Block committing local.settings.json (secrets). Install once: copy to .git/hooks/pre-commit
+
+if git diff --cached --name-only | grep -q '^local\.settings\.json$'; then
+  echo "error: Refusing to commit local.settings.json (contains secrets). It is in .gitignore; remove it from the commit."
+  exit 1
+fi
+exit 0
