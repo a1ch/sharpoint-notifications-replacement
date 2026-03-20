@@ -95,6 +95,11 @@ public class EmailService : IEmailService
         var accent = brandInfo?.AccentColorHex ?? "#2563eb";
         var hasSiteName = !string.IsNullOrWhiteSpace(siteName);
         var hasLibraryUrl = !string.IsNullOrWhiteSpace(listOrLibraryUrl);
+        var latestChange = changes
+            .OrderByDescending(c => c.Modified == default ? DateTimeOffset.MinValue : c.Modified)
+            .FirstOrDefault();
+        var latestChangedBy = !string.IsNullOrWhiteSpace(latestChange?.ModifiedBy) ? latestChange.ModifiedBy : "Unknown user";
+        var latestChangedAt = latestChange != null ? FormatModifiedDate(latestChange.Modified) : "Unknown date";
 
         // Email-safe: inline styles, no external CSS
         sb.Append("<html><body style=\"margin:0; padding:0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 15px; line-height: 1.5; color: #1e293b; background: #f1f5f9;\">");
@@ -115,6 +120,11 @@ public class EmailService : IEmailService
         if (hasSiteName)
             sb.Append("<p style=\"margin: 0 0 6px; font-size: 13px; color: #64748b;\">").Append(System.Net.WebUtility.HtmlEncode(siteName!)).Append("</p>");
         sb.Append("<p style=\"margin: 0 0 12px; font-size: 15px; color: #475569;\">New or changed in the last 24 hours in <strong style=\"color: #1e293b;\">").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong></p>");
+        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin: 0 0 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;\"><tr><td style=\"padding: 12px 14px; font-size: 13px; color: #475569;\">");
+        sb.Append("<strong style=\"color:#334155;\">Items changed:</strong> ").Append(changes.Count).Append("<br/>");
+        sb.Append("<strong style=\"color:#334155;\">Latest update:</strong> ").Append(System.Net.WebUtility.HtmlEncode(latestChangedAt)).Append("<br/>");
+        sb.Append("<strong style=\"color:#334155;\">Latest changed by:</strong> ").Append(System.Net.WebUtility.HtmlEncode(latestChangedBy!));
+        sb.Append("</td></tr></table>");
         if (hasLibraryUrl)
             sb.Append("<p style=\"margin: 0 0 20px; font-size: 14px;\"><a href=\"").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryUrl)).Append("\" style=\"color: ").Append(accent).Append("; font-weight: 600; text-decoration: none;\">Open ").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append(" →</a></p>");
         else
@@ -125,9 +135,8 @@ public class EmailService : IEmailService
             sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-bottom: 12px; background: #f8fafc; border-radius: 8px; border-left: 4px solid ").Append(accent).Append(";\"><tr><td style=\"padding: 14px 16px;\">");
             sb.Append("<a href=\"").Append(System.Net.WebUtility.HtmlEncode(c.WebUrl)).Append("\" style=\"font-weight: 600; color: ").Append(accent).Append("; text-decoration: none; font-size: 15px;\">").Append(System.Net.WebUtility.HtmlEncode(c.Title)).Append("</a>");
             sb.Append("<div style=\"font-size: 13px; color: #64748b; margin-top: 4px;\">");
-            sb.Append(FormatModifiedDate(c.Modified));
-            if (!string.IsNullOrEmpty(c.ModifiedBy))
-                sb.Append(" · ").Append(System.Net.WebUtility.HtmlEncode(c.ModifiedBy));
+            sb.Append("<strong>Updated:</strong> ").Append(FormatModifiedDate(c.Modified));
+            sb.Append(" · <strong>By:</strong> ").Append(System.Net.WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(c.ModifiedBy) ? "Unknown user" : c.ModifiedBy));
             sb.Append("</div>");
             sb.Append("</td></tr></table>");
         }
