@@ -301,11 +301,33 @@ public class SharePointDigestService : ISharePointDigestService
         var isRoot = hostAndPath.EndsWith(":/sites/root", StringComparison.OrdinalIgnoreCase);
         var hostname = isRoot ? hostAndPath.AsSpan(0, hostAndPath.IndexOf(":/", StringComparison.Ordinal)).ToString() : null;
 
-        // Tenant root: try "root" first (many tenants only accept this), then hostname
-        var toTry = isRoot ? new[] { "root", hostname! } : new[] { hostAndPath };
+        var toTry = new List<string>();
+        if (isRoot)
+        {
+            toTry.Add("root");
+            if (!string.IsNullOrEmpty(hostname)) toTry.Add(hostname!);
+        }
+        else
+        {
+            toTry.Add(hostAndPath);
+            // Browser URL may be https://tenant/itsp but Graph often expects /sites/itsp for team sites — try both.
+            var sep = hostAndPath.IndexOf(":/", StringComparison.Ordinal);
+            if (sep > 0)
+            {
+                var host = hostAndPath[..sep];
+                var rel = hostAndPath[(sep + 2)..].TrimStart('/');
+                if (!string.IsNullOrEmpty(rel) &&
+                    !rel.StartsWith("sites/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var firstSeg = rel.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(firstSeg))
+                        toTry.Add($"{host}:/sites/{firstSeg}");
+                }
+            }
+        }
 
         Exception? lastEx = null;
-        foreach (var siteId in toTry)
+        foreach (var siteId in toTry.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (string.IsNullOrEmpty(siteId)) continue;
             try
@@ -318,7 +340,12 @@ public class SharePointDigestService : ISharePointDigestService
             }
         }
 
-        _logger?.LogWarning(lastEx, "GetSiteByPathAsync failed for root site (tried 'root' and hostname). Ensure Microsoft Graph permission Sites.Read.All (Application) is granted with admin consent.");
+        var hint = isRoot
+            ? "For tenant root, tried 'root' and hostname."
+            : $"Tried Graph site ids: {string.Join(", ", toTry.Distinct(StringComparer.OrdinalIgnoreCase))}.";
+        _logger?.LogWarning(lastEx,
+            "GetSiteByPathAsync failed ({Hint}) Ensure Application permission Sites.Read.All (admin consent) or Sites.Selected with this site granted to the app. Last error: {Message}",
+            hint, lastEx?.Message ?? "(none)");
         return null;
     }
 
