@@ -26,9 +26,10 @@ public class DailyDigestFunction
     [Function("DailyDigest")]
     public async Task Run([TimerTrigger("0 0 8 * * *")] TimerInfo timer, CancellationToken cancellationToken)
     {
-        if (IsDigestDisabled())
+        if (!IsDigestEnabled())
         {
-            _logger.LogInformation("Daily digest skipped: DIGEST_DISABLED is enabled. Remove the setting or set it to false when Graph/tenant access is renewed.");
+            _logger.LogInformation(
+                "Daily digest skipped: DIGEST_ENABLED is not true. Set DIGEST_ENABLED to true in app settings when you want digests (timer still runs at 8 AM).");
             return;
         }
 
@@ -75,10 +76,10 @@ public class DailyDigestFunction
         _logger.LogInformation("Daily digest finished.");
     }
 
-    /// <summary>When true/1/yes, timer still fires at 8 AM but work is skipped (e.g. until Application Graph permissions are renewed).</summary>
-    private static bool IsDigestDisabled()
+    /// <summary>Digest work runs only when DIGEST_ENABLED is true/1/yes. Default off so deploys do not send mail until explicitly enabled.</summary>
+    private static bool IsDigestEnabled()
     {
-        var v = Environment.GetEnvironmentVariable("DIGEST_DISABLED");
+        var v = Environment.GetEnvironmentVariable("DIGEST_ENABLED");
         if (string.IsNullOrWhiteSpace(v)) return false;
         return v.Equals("true", StringComparison.OrdinalIgnoreCase)
             || v == "1"

@@ -9,6 +9,6 @@
     "CONFIG_SITE_URL": "",
     "CONFIG_LIST_NAME": "Digest Subscriptions",
     "SEND_FROM_USER_ID": "",
-    "DIGEST_DISABLED": ""
+    "DIGEST_ENABLED": "true"
   }
 }
