@@ -1,14 +1,17 @@
+# Legacy/manual deploy (publish profile + client-secret login).
+# Primary CI deploy for Streamflo is: main_streamflo-sharepoint-digest.yml (OIDC, runs on push to main).
 name: Deploy to Azure Function
 
 on:
-  push:
-    branches: [ main ]
+  # Manual only — avoids duplicate push deploys and empty runs next to streamflo workflow.
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'   # Opt into Node.js 24 (Node 20 deprecated on runners)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
+  # Set below or add a workflow_dispatch input later; avoid vars.* in env (can fail evaluation on some repos).
+  AZURE_FUNCTIONAPP_NAME: sharepointnotificationreplacement
 
 jobs:
   build-and-deploy:
@@ -17,15 +20,13 @@ jobs:
       contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-      # Repository variable AZURE_FUNCTIONAPP_NAME; else legacy default (avoid workflow-level vars — can skip all jobs on some accounts)
-      AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME || 'sharepointnotificationreplacement' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Deploy target
         run: |
           echo "Function App: ${{ env.AZURE_FUNCTIONAPP_NAME }}"
-          echo "Repository variable AZURE_FUNCTIONAPP_NAME overrides default when set."
+          echo "Edit AZURE_FUNCTIONAPP_NAME in this workflow to change target."
 
       - name: Ensure upstream code (sync from a1ch if this is a fork with old code)
         run: |
@@ -68,8 +69,7 @@ jobs:
           az functionapp config appsettings set --name ${{ env.AZURE_FUNCTIONAPP_NAME }} --resource-group ${{ secrets.AZURE_FUNCTIONAPP_RESOURCE_GROUP }} --settings FUNCTIONS_WORKER_RUNTIME=dotnet-isolated WEBSITE_USE_PLACEHOLDER_DOTNETISOLATED=1 --output none
           echo "Set FUNCTIONS_WORKER_RUNTIME and WEBSITE_USE_PLACEHOLDER_DOTNETISOLATED."
 
-      # If deploy fails with "Failed to upload blob to storage account" / "Server failed to authenticate",
-      # the Function App's storage (AzureWebJobsStorage) is misconfigured. See docs/DEPLOY-TROUBLESHOOTING.md
+      # If deploy fails with storage auth errors, see docs/DEPLOY-TROUBLESHOOTING.md
       - name: Deploy to Azure Function
         uses: Azure/functions-action@v1
         with:
