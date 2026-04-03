@@ -21,10 +21,11 @@ public class DailyDigestFunction
     }
 
     /// <summary>
-    /// Runs daily at 8:00 AM. Set WEBSITE_TIME_ZONE in Azure (e.g. "Eastern Standard Time") for local time.
+    /// Production: daily at 8:00 AM — use <c>0 0 8 * * *</c>. Set WEBSITE_TIME_ZONE in Azure for local time.
+    /// TEMP (Azure test): <c>0 */1 * * * *</c> = every minute — revert before leaving in production.
     /// </summary>
     [Function("DailyDigest")]
-    public async Task Run([TimerTrigger("0 0 8 * * *")] TimerInfo timer, CancellationToken cancellationToken)
+    public async Task Run([TimerTrigger("0 */1 * * * *")] TimerInfo timer, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Daily digest started at {Time}", DateTime.UtcNow);
 
