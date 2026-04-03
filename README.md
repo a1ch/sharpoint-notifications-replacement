@@ -45,6 +45,7 @@ Configure the following in **Azure Function App** → **Configuration** → **Ap
 | `CONFIG_SITE_URL`     | SharePoint site that contains the config list (e.g. `https://tenant.sharepoint.com/sites/MySite`). |
 | `CONFIG_LIST_NAME`    | Display name of the config list (default: `Digest Subscriptions`). |
 | `SEND_FROM_USER_ID`   | Object ID or UPN of the mailbox to send digest emails from. |
+| `DIGEST_DISABLED`     | Optional. Set to `true` or `1` to skip all digest work (timer still runs once daily; no Graph/mail). Remove or set `false` when ready. |
 
 `AzureWebJobsStorage` must point to your storage account connection string (required for the function app).
 

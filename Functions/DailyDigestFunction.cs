@@ -26,6 +26,12 @@ public class DailyDigestFunction
     [Function("DailyDigest")]
     public async Task Run([TimerTrigger("0 0 8 * * *")] TimerInfo timer, CancellationToken cancellationToken)
     {
+        if (IsDigestDisabled())
+        {
+            _logger.LogInformation("Daily digest skipped: DIGEST_DISABLED is enabled. Remove the setting or set it to false when Graph/tenant access is renewed.");
+            return;
+        }
+
         _logger.LogInformation("Daily digest started at {Time}", DateTime.UtcNow);
 
         IReadOnlyList<Models.ConfigListItem> configRows;
@@ -67,6 +73,16 @@ public class DailyDigestFunction
         }
 
         _logger.LogInformation("Daily digest finished.");
+    }
+
+    /// <summary>When true/1/yes, timer still fires at 8 AM but work is skipped (e.g. until Application Graph permissions are renewed).</summary>
+    private static bool IsDigestDisabled()
+    {
+        var v = Environment.GetEnvironmentVariable("DIGEST_DISABLED");
+        if (string.IsNullOrWhiteSpace(v)) return false;
+        return v.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || v == "1"
+            || v.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetListNameFromUrl(string url)
