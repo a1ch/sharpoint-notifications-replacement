@@ -41,4 +41,4 @@ Then:
 
 ### 3. Redeploy
 
-After fixing storage and saving app settings (and restarting the app if you changed settings), run the GitHub Action again (push to `main` or **Actions** → **Deploy to Azure Function** → **Run workflow**).
+After fixing storage and saving app settings (and restarting the app if you changed settings), run the GitHub Action again (push to `main` or **Actions** → **Build and deploy dotnet core project to Azure Function App - streamflo-sharepoint-digest** → **Run workflow**).

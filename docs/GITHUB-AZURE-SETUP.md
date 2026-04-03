@@ -36,48 +36,16 @@ Confirm **AzureWebJobsStorage** (and **DEPLOYMENT_STORAGE_CONNECTION_STRING** if
 
 **Save** and **Restart** the Function App if prompted.
 
-## 3. GitHub repository variable (Function App name)
+## 3. GitHub: deploy workflow and OIDC
 
-1. GitHub repo → **Settings** → **Secrets and variables** → **Actions** → **Variables** tab.
-2. **New repository variable**
-   - **Name:** `AZURE_FUNCTIONAPP_NAME`  
-   - **Value:** the **exact** Function App name from Azure (not the full URL).
+**Push to `main`** (and manual **Run workflow**) use **main_streamflo-sharepoint-digest.yml**. It deploys **`streamflo-sharepoint-digest`** (change the name in that YAML if you fork). Login uses **OIDC**: GitHub secrets named like **`AZUREAPPSERVICE_*`** (tenant, subscription, client ID), usually created from Azure Portal → Function App → **Deployment Center** → **GitHub Actions**. See [Connect GitHub to Azure](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure).
 
-**Push to `main`** runs **main_streamflo-sharepoint-digest.yml** (Streamflo Function App + OIDC secrets). The optional **Deploy to Azure Function** workflow is **manual-only** and uses different (`AZURE_*` / publish profile) secrets—do not point those at a tenant you no longer use.
+You can delete unused legacy GitHub secrets (`AZURE_FUNCTIONAPP_PUBLISH_PROFILE`, deploy-only SP secrets) if you added them for the old manual workflow.
 
-## 4. GitHub Actions secrets (deploy identity + Azure)
-
-Same page → **Secrets** tab. Configure:
-
-| Secret | Purpose |
-|--------|--------|
-| `AZURE_TENANT_ID` | Tenant where the **subscription** and Function App live |
-| `AZURE_SUBSCRIPTION_ID` | Target subscription ID |
-| `AZURE_CLIENT_ID` | **Service principal (app) used only for deployment**—must have rights to deploy to the Function App (e.g. Contributor on RG) |
-| `AZURE_CLIENT_SECRET` | Secret for that deploy SP |
-| `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` | Contents of the publish profile file (see below) |
-| `AZURE_FUNCTIONAPP_RESOURCE_GROUP` | Resource group **name** containing the Function App |
-
-**Publish profile**
-
-1. Azure Portal → your **Function App** → **Get publish profile** (download `.PublishSettings`).
-2. Open the file in a text editor, **copy the entire XML/content**.
-3. Paste into GitHub secret `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`.
-
-**Deploy service principal**
-
-Create an app registration (or use an existing automation account) and grant it **Contributor** (or narrower custom role) on the resource group or subscription. Use **that** app’s client ID + secret in `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` for the workflow—not necessarily the same app used for Microsoft Graph at runtime.
-
-## 5. Run the workflow
+## 4. Run the workflow
 
 - **Automatic:** push to `main`.
-- **Manual:** **Actions** → **Deploy to Azure Function** → **Run workflow**.
-
-The job prints **Function App: &lt;name&gt;** so you can confirm the correct target.
-
-## 6. OIDC (optional, no client secret)
-
-You can switch `azure/login` to **OpenID Connect** (federated credential) so you do not store `AZURE_CLIENT_SECRET`. That requires extra Entra + GitHub configuration; the current workflow uses client ID + secret for simplicity.
+- **Manual:** **Actions** → **Build and deploy dotnet core project to Azure Function App - streamflo-sharepoint-digest** → **Run workflow**.
 
 ## Related docs
 

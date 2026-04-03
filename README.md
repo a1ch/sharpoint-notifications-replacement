@@ -102,14 +102,13 @@ Run the function locally to reproduce and debug startup/runtime errors (e.g. `Wo
 2. **Create** the Function App in Azure (.NET 8, isolated) and set **Application settings** on the app (see [Configuration](#configuration)).
 
 3. **GitHub → Settings → Secrets and variables → Actions**  
-   - **Pushes to `main`** run **main_streamflo-sharepoint-digest.yml** (OIDC; secrets named `AZUREAPPSERVICE_CLIENTID_*`, etc.). That deploys **`streamflo-sharepoint-digest`**—not the legacy Ingot app.  
-   - Optional **Deploy to Azure Function** workflow is **manual-only** and uses `AZURE_CLIENT_ID` / publish profile style secrets; only use it if you configure those for Streamflo.
+   - **Pushes to `main`** run **main_streamflo-sharepoint-digest.yml** (OIDC; secrets named `AZUREAPPSERVICE_*`). That deploys **`streamflo-sharepoint-digest`**—not the legacy Ingot app.
 
-4. **Actions** → run workflows manually if needed; everyday deploys follow pushes to `main` via the Streamflo workflow.
+4. **Actions** → to deploy on demand, open **Build and deploy dotnet core project to Azure Function App - streamflo-sharepoint-digest** and choose **Run workflow** (same YAML as automatic deploys).
 
 Runtime settings (`AZURE_*` for Graph, `CONFIG_SITE_URL`, `SEND_FROM_USER_ID`, storage, etc.) live in the **Function App configuration in Azure**, not in GitHub (except the deploy SP used by `azure/login`).
 
-**If the build fails with errors about `IDictionary`/`IReadOnlyDictionary`, `GetByPath`, or `SendMailPostRequestBody`:** the workflow may be running from a fork or an older clone. Sync with the upstream repo: in your clone run `git fetch https://github.com/a1ch/sharpoint-notifications-replacement.git main` and then `git merge FETCH_HEAD` (or reset to that commit), then push. Ensure the workflow runs from the repo that has the latest `main` (check the "Verify repo and commit" step in the Actions log).
+**If the build fails with errors about `IDictionary`/`IReadOnlyDictionary`, `GetByPath`, or `SendMailPostRequestBody`:** the workflow may be running from a fork or an older clone. Sync with the upstream repo: in your clone run `git fetch https://github.com/a1ch/sharpoint-notifications-replacement.git main` and then `git merge FETCH_HEAD` (or reset to that commit), then push. Ensure the workflow runs from the repo that has the latest `main` (check the Actions log commit SHA).
 
 **If the function fails to start with `System.AggregateException` / `WorkerProcessExitException` or "dotnet exited with code 150":** The isolated worker process is exiting before the host can load function metadata—usually because the Function App is not configured for .NET 8 Isolated. In the Azure Portal:
 
