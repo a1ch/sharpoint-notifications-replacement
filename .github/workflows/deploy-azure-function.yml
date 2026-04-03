@@ -7,17 +7,25 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'   # Opt into Node.js 24 (Node 20 deprecated on runners)
-  AZURE_FUNCTIONAPP_NAME: 'sharepointnotificationreplacement'
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      # Repository variable AZURE_FUNCTIONAPP_NAME; else legacy default (avoid workflow-level vars — can skip all jobs on some accounts)
+      AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME || 'sharepointnotificationreplacement' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Deploy target
+        run: |
+          echo "Function App: ${{ env.AZURE_FUNCTIONAPP_NAME }}"
+          echo "Repository variable AZURE_FUNCTIONAPP_NAME overrides default when set."
 
       - name: Ensure upstream code (sync from a1ch if this is a fork with old code)
         run: |
