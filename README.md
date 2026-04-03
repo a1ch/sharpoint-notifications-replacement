@@ -94,25 +94,19 @@ Run the function locally to reproduce and debug startup/runtime errors (e.g. `Wo
 
 ## Deploy to Azure from GitHub
 
-This repo is set up to deploy to [GitHub - a1ch/sharpoint-notifications-replacement](https://github.com/a1ch/sharpoint-notifications-replacement).
+**Step-by-step (new Function App + secrets):** see [docs/GITHUB-AZURE-SETUP.md](docs/GITHUB-AZURE-SETUP.md).
 
-1. **Push this code** to that repository (e.g. clone, copy files, push to `main`).
+1. **Push** this code to your GitHub repo’s `main` branch.
 
-2. **Get a publish profile** from Azure:
-   - **Function App** → **Overview** → **Download publish profile**.
+2. **Create** the Function App in Azure (.NET 8, isolated) and set **Application settings** on the app (see [Configuration](#configuration)).
 
-3. **Add GitHub secrets** for the repo (deploy uses RBAC and needs Azure login):
-   - `AZURE_FUNCTIONAPP_PUBLISH_PROFILE` – (optional) paste the full contents of the downloaded publish profile.
-   - For RBAC deploy, also add: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_SECRET` (from an app registration that has **Contributor** or **Website Contributor** on the Function App or its resource group).
-   - Optional: `AZURE_FUNCTIONAPP_RESOURCE_GROUP` – if set, the workflow will ensure `FUNCTIONS_WORKER_RUNTIME=dotnet-isolated` and `WEBSITE_USE_PLACEHOLDER_DOTNETISOLATED=1` on the Function App after each deploy (helps avoid worker startup failures).
+3. **GitHub → Settings → Secrets and variables → Actions**  
+   - **Pushes to `main`** run **main_streamflo-sharepoint-digest.yml** (OIDC; secrets named `AZUREAPPSERVICE_CLIENTID_*`, etc.). That deploys **`streamflo-sharepoint-digest`**—not the legacy Ingot app.  
+   - Optional **Deploy to Azure Function** workflow is **manual-only** and uses `AZURE_CLIENT_ID` / publish profile style secrets; only use it if you configure those for Streamflo.
 
-4. **Set the function app name** in the workflow:
-   - Edit `.github/workflows/deploy-azure-function.yml`.
-   - Replace `YOUR_FUNCTION_APP_NAME` with your Azure Function App name (in the `env` section).
+4. **Actions** → run workflows manually if needed; everyday deploys follow pushes to `main` via the Streamflo workflow.
 
-5. **Application settings** (including `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `CONFIG_SITE_URL`, `CONFIG_LIST_NAME`, `SEND_FROM_USER_ID`, and `AzureWebJobsStorage`) must be configured in the Azure Function App; they are not stored in GitHub.
-
-After that, pushes to `main` will build and deploy the function. You can also run the workflow manually (**Actions** → **Deploy to Azure Function** → **Run workflow**).
+Runtime settings (`AZURE_*` for Graph, `CONFIG_SITE_URL`, `SEND_FROM_USER_ID`, storage, etc.) live in the **Function App configuration in Azure**, not in GitHub (except the deploy SP used by `azure/login`).
 
 **If the build fails with errors about `IDictionary`/`IReadOnlyDictionary`, `GetByPath`, or `SendMailPostRequestBody`:** the workflow may be running from a fork or an older clone. Sync with the upstream repo: in your clone run `git fetch https://github.com/a1ch/sharpoint-notifications-replacement.git main` and then `git merge FETCH_HEAD` (or reset to that commit), then push. Ensure the workflow runs from the repo that has the latest `main` (check the "Verify repo and commit" step in the Actions log).
 

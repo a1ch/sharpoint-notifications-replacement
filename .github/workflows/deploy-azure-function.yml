@@ -1,5 +1,6 @@
-# Legacy/manual deploy (publish profile + client-secret login).
-# Primary CI deploy for Streamflo is: main_streamflo-sharepoint-digest.yml (OIDC, runs on push to main).
+# Optional manual deploy (publish profile + client-secret secrets: AZURE_CLIENT_ID, etc.).
+# Primary deploy: main_streamflo-sharepoint-digest.yml (OIDC, push to main → Streamflo Function App).
+# Do not point secrets or app-name at the old Ingot tenant unless you intend to.
 name: Deploy to Azure Function
 
 on:
@@ -11,7 +12,8 @@ env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
   DOTNET_VERSION: '8.0.x'
   # Set below or add a workflow_dispatch input later; avoid vars.* in env (can fail evaluation on some repos).
-  AZURE_FUNCTIONAPP_NAME: sharepointnotificationreplacement
+  # If you use this workflow, set app name + AZURE_* / publish profile secrets to the same tenant.
+  AZURE_FUNCTIONAPP_NAME: streamflo-sharepoint-digest
 
 jobs:
   build-and-deploy:
