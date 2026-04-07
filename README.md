@@ -2,6 +2,8 @@
 
 Azure Function that runs once a day at 8:00 AM and emails users about new or changed items in SharePoint lists/libraries they’re subscribed to.
 
+**Production (Azure):** This app is meant to run as a **.NET 8 isolated** Azure Function App named **`streamflo-sharepoint-digest`**. Pushes to **`main`** deploy it automatically via GitHub Actions ([`main_streamflo-sharepoint-digest.yml`](.github/workflows/main_streamflo-sharepoint-digest.yml)). Microsoft Graph, SharePoint, storage, and digest toggles are configured in **Azure Portal → your Function App → Configuration** (see [Configuration](#configuration)), not in the repository.
+
 ## How it works
 
 1. **Config list** – A SharePoint list (on a site you specify) has two columns:
