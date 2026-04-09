@@ -137,7 +137,7 @@ public class SharePointDigestService : ISharePointDigestService
             DateTimeOffset modified = default;
             if (TryGetFieldValue(fields, "Modified", out var modifiedObj) && modifiedObj != null)
                 modified = ParseModifiedValue(modifiedObj) ?? default;
-            var modifiedBy = GetFieldString(fields, "Editor") ?? GetFieldString(fields, "ModifiedBy");
+            var modifiedBy = GetModifiedByDisplayName(fields);
             var webUrl = baseWebUrl;
             if (item.WebUrl != null)
                 webUrl = item.WebUrl;
@@ -193,6 +193,125 @@ public class SharePointDigestService : ISharePointDigestService
         if (o is Microsoft.Graph.Models.Json j && j.AdditionalData?.TryGetValue("displayName", out var dn) == true)
             return dn?.ToString();
         return o.ToString();
+    }
+
+    /// <summary>SharePoint "Modified By" via Graph: Editor / ModifiedBy may be objects (LookupValue, Email) or claims strings—not plain displayName.</summary>
+    private static string? GetModifiedByDisplayName(IDictionary<string, object> fields)
+    {
+        foreach (var fieldName in new[] { "Editor", "ModifiedBy", "Modified_x0020_By" })
+        {
+            if (!TryGetFieldValue(fields, fieldName, out var o) || o == null)
+                continue;
+            var name = ParsePersonOrClaimsField(o);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name;
+        }
+
+        return null;
+    }
+
+    private static string? ParsePersonOrClaimsField(object? o)
+    {
+        if (o == null)
+            return null;
+        if (o is string s)
+            return NormalizeClaimsOrString(s);
+        if (o is JsonElement je)
+            return ParsePersonFromJsonElement(je);
+        if (o is Microsoft.Graph.Models.Json j && j.AdditionalData != null)
+        {
+            foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
+            {
+                foreach (var kv in j.AdditionalData)
+                {
+                    if (!kv.Key.Equals(want, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    var str = GraphValueToTrimmedString(kv.Value);
+                    if (!string.IsNullOrWhiteSpace(str))
+                        return str;
+                }
+            }
+        }
+
+        if (o is IDictionary<string, object> nested)
+        {
+            foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
+            {
+                if (!TryGetFieldValue(nested, want, out var inner) || inner == null)
+                    continue;
+                var str = ParsePersonOrClaimsField(inner);
+                if (!string.IsNullOrWhiteSpace(str))
+                    return str;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ParsePersonFromJsonElement(JsonElement je)
+    {
+        if (je.ValueKind == JsonValueKind.String)
+            return NormalizeClaimsOrString(je.GetString() ?? "");
+        if (je.ValueKind != JsonValueKind.Object)
+            return null;
+        foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
+        {
+            foreach (var prop in je.EnumerateObject())
+            {
+                if (!prop.Name.Equals(want, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                {
+                    var v = prop.Value.GetString();
+                    if (!string.IsNullOrWhiteSpace(v))
+                        return v.Trim();
+                }
+            }
+        }
+
+        foreach (var prop in je.EnumerateObject())
+        {
+            if (prop.Value.ValueKind != JsonValueKind.String)
+                continue;
+            var v = prop.Value.GetString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(v) && v.Contains('@', StringComparison.Ordinal))
+                return v;
+        }
+
+        return null;
+    }
+
+    private static string? GraphValueToTrimmedString(object? v)
+    {
+        if (v == null)
+            return null;
+        if (v is string ss)
+            return string.IsNullOrWhiteSpace(ss) ? null : ss.Trim();
+        if (v is JsonElement jee && jee.ValueKind == JsonValueKind.String)
+        {
+            var t = jee.GetString()?.Trim();
+            return string.IsNullOrWhiteSpace(t) ? null : t;
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeClaimsOrString(string s)
+    {
+        s = s.Trim();
+        if (s.Length == 0)
+            return null;
+        foreach (var marker in new[] { "|membership|", "|windows|", "|claims|" })
+        {
+            var idx = s.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+                continue;
+            var tail = s[(idx + marker.Length)..].Trim();
+            if (tail.Length > 0)
+                return tail;
+        }
+
+        return s;
     }
 
     private static bool TryGetFieldValue(IDictionary<string, object> fields, string name, out object? value)
