@@ -137,7 +137,10 @@ public class SharePointDigestService : ISharePointDigestService
             DateTimeOffset modified = default;
             if (TryGetFieldValue(fields, "Modified", out var modifiedObj) && modifiedObj != null)
                 modified = ParseModifiedValue(modifiedObj) ?? default;
-            var modifiedBy = GetModifiedByDisplayName(fields);
+            // Prefer listItem.lastModifiedBy (baseItem); SharePoint fields.Editor is often empty or non-string in Graph.
+            var modifiedBy = GetIdentitySetDisplayName(item.LastModifiedBy)
+                ?? GetModifiedByDisplayName(fields)
+                ?? GetLastModifiedByFromSerializedListItem(item);
             var webUrl = baseWebUrl;
             if (item.WebUrl != null)
                 webUrl = item.WebUrl;
@@ -195,6 +198,72 @@ public class SharePointDigestService : ISharePointDigestService
         return o.ToString();
     }
 
+    /// <summary>When Kiota exposes lastModifiedBy only in serialized JSON, recover user display/email.</summary>
+    private static string? GetLastModifiedByFromSerializedListItem(ListItem item)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(item);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return null;
+            foreach (var prop in root.EnumerateObject())
+            {
+                if (!prop.Name.Equals("lastModifiedBy", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var lmb = prop.Value;
+                if (lmb.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+                    return null;
+                if (lmb.TryGetProperty("user", out var user) && user.ValueKind == JsonValueKind.Object)
+                    return ParsePersonFromJsonElement(user);
+                return ParsePersonFromJsonElement(lmb);
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
+    }
+
+    /// <summary>Graph listItem.lastModifiedBy / createdBy identitySet (preferred over fields.Editor for display names).</summary>
+    private static string? GetIdentitySetDisplayName(IdentitySet? identitySet)
+    {
+        if (identitySet == null)
+            return null;
+
+        foreach (var identity in new[] { identitySet.User, identitySet.Application, identitySet.Device })
+        {
+            if (identity == null)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(identity.DisplayName))
+                return identity.DisplayName.Trim();
+
+            if (identity.AdditionalData != null)
+            {
+                foreach (var want in new[] { "email", "mail", "userPrincipalName" })
+                {
+                    foreach (var kv in identity.AdditionalData)
+                    {
+                        if (!kv.Key.Equals(want, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        var s = GraphValueToTrimmedString(kv.Value);
+                        if (!string.IsNullOrWhiteSpace(s))
+                            return s;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(identity.Id) && identity.Id.Contains('@', StringComparison.Ordinal))
+                return identity.Id.Trim();
+        }
+
+        return null;
+    }
+
     /// <summary>SharePoint "Modified By" via Graph: Editor / ModifiedBy may be objects (LookupValue, Email) or claims strings—not plain displayName.</summary>
     private static string? GetModifiedByDisplayName(IDictionary<string, object> fields)
     {
@@ -203,6 +272,22 @@ public class SharePointDigestService : ISharePointDigestService
             if (!TryGetFieldValue(fields, fieldName, out var o) || o == null)
                 continue;
             var name = ParsePersonOrClaimsField(o);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name;
+        }
+
+        // Graph / locale-specific internal names: any field key that looks like "last editor" but skip *LookupId-only* numbers.
+        foreach (var kv in fields)
+        {
+            if (kv.Value == null)
+                continue;
+            var k = kv.Key;
+            if (k.Contains("LookupId", StringComparison.OrdinalIgnoreCase) || k.Contains("LookupValueId", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!k.Contains("ditor", StringComparison.OrdinalIgnoreCase) &&
+                !k.Contains("ModifiedBy", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var name = ParsePersonOrClaimsField(kv.Value);
             if (!string.IsNullOrWhiteSpace(name))
                 return name;
         }
@@ -243,6 +328,23 @@ public class SharePointDigestService : ISharePointDigestService
                 if (!string.IsNullOrWhiteSpace(str))
                     return str;
             }
+        }
+
+        // Kiota / OpenType values: serialize to JSON and pick person-like properties.
+        try
+        {
+            var json = JsonSerializer.Serialize(o);
+            if (json.Length > 2 && json[0] == '{')
+            {
+                using var doc = JsonDocument.Parse(json);
+                var fromJson = ParsePersonFromJsonElement(doc.RootElement);
+                if (!string.IsNullOrWhiteSpace(fromJson))
+                    return fromJson;
+            }
+        }
+        catch
+        {
+            // ignore
         }
 
         return null;
@@ -287,10 +389,16 @@ public class SharePointDigestService : ISharePointDigestService
             return null;
         if (v is string ss)
             return string.IsNullOrWhiteSpace(ss) ? null : ss.Trim();
-        if (v is JsonElement jee && jee.ValueKind == JsonValueKind.String)
+        if (v is JsonElement jee)
         {
-            var t = jee.GetString()?.Trim();
-            return string.IsNullOrWhiteSpace(t) ? null : t;
+            if (jee.ValueKind == JsonValueKind.String)
+            {
+                var t = jee.GetString()?.Trim();
+                return string.IsNullOrWhiteSpace(t) ? null : t;
+            }
+
+            if (jee.ValueKind == JsonValueKind.Object)
+                return ParsePersonFromJsonElement(jee);
         }
 
         return null;
