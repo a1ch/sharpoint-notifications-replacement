@@ -61,10 +61,30 @@ public class DailyDigestFunction
                 var changes = await _sharePoint.GetRecentChangesAsync(row.ListOrLibraryUrl, since, cancellationToken).ConfigureAwait(false);
                 var listName = GetListNameFromUrl(row.ListOrLibraryUrl);
                 var siteName = GetSiteNameFromUrl(row.ListOrLibraryUrl);
-                if (changes.Count > 0)
-                    await _email.SendDigestAsync(row.Email, listName, changes, row.Brand, siteName, row.ListOrLibraryUrl, cancellationToken).ConfigureAwait(false);
-                else
+
+                if (changes.Count == 0)
+                {
                     _logger.LogInformation("No changes for {Url}, skipping email to {Email}", row.ListOrLibraryUrl, row.Email);
+                    continue;
+                }
+
+                // Support multiple recipients separated by semicolons (e.g. "a@example.com;b@example.com")
+                var recipients = row.Email
+                    .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Where(e => !string.IsNullOrWhiteSpace(e))
+                    .ToList();
+
+                foreach (var recipient in recipients)
+                {
+                    try
+                    {
+                        await _email.SendDigestAsync(recipient, listName, changes, row.Brand, siteName, row.ListOrLibraryUrl, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error sending digest for {Url} to {Email}", row.ListOrLibraryUrl, recipient);
+                    }
+                }
             }
             catch (Exception ex)
             {
