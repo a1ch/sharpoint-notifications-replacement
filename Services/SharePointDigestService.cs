@@ -495,8 +495,15 @@ public class SharePointDigestService : ISharePointDigestService
                 return (sitePath, listName);
             }
 
-            // .../sites/SiteName/Lists/ListName/... or .../sites/SiteName/ListName/...
+            // .../sites/SiteName/Lists/ListName/... or .../sites/SiteName/LibraryName/...
             var afterSites = path.Substring(sitesIndex);
+
+            // Find the end of the site name segment (everything up to and including /sites/SiteName)
+            var siteNameEnd = afterSites.IndexOf('/', 7); // skip past "/sites/"
+            var siteRelativePath = siteNameEnd > 0 ? afterSites.Substring(0, siteNameEnd) : afterSites;
+            var sitePath2 = $"{uri.Host}:{siteRelativePath}";
+
+            // Now extract the list/library name from the segment immediately after the site name
             var listName2 = "";
             var listsIndex2 = afterSites.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
             if (listsIndex2 >= 0)
@@ -505,16 +512,15 @@ public class SharePointDigestService : ISharePointDigestService
                 var end = listPart.IndexOf('/');
                 listName2 = end > 0 ? Uri.UnescapeDataString(listPart.Substring(0, end)) : Uri.UnescapeDataString(listPart);
             }
-            else
+            else if (siteNameEnd > 0)
             {
-                var segments = afterSites.Split('/');
-                if (segments.Length >= 3)
-                    listName2 = Uri.UnescapeDataString(segments[2]);
+                // Library URL: segment right after site name is the library name
+                var remainder = afterSites.Substring(siteNameEnd + 1); // skip the slash
+                var nextSlash = remainder.IndexOf('/');
+                var librarySegment = nextSlash > 0 ? remainder.Substring(0, nextSlash) : remainder;
+                listName2 = Uri.UnescapeDataString(librarySegment);
             }
-            var sitePathEnd = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
-            if (sitePathEnd < 0)
-                sitePathEnd = path.Length;
-            var sitePath2 = $"{uri.Host}:{path.Substring(0, sitePathEnd)}";
+
             return (sitePath2, listName2);
         }
         catch
