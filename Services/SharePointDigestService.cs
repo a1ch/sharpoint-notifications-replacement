@@ -105,19 +105,25 @@ public class SharePointDigestService : ISharePointDigestService
         _logger?.LogInformation("Parsed URL '{Url}' -> site='{SitePath}', subsite='{SubsitePath}', list='{ListName}'",
             listOrLibraryUrl, sitePath, subsitePath ?? "(none)", listName);
 
-        // Build ordered list of site paths to try, from most specific to least specific.
-        // This handles classic subsites which Graph can sometimes resolve directly via full path
-        // even though it won't enumerate them as child sites.
+        // Build ordered list of site paths to try, most specific first.
+        // Graph can resolve classic subsites via their full server-relative path even though
+        // it won't enumerate them as child sites.
         var sitePathsToTry = new List<string>();
 
         if (!string.IsNullOrEmpty(subsitePath))
         {
-            // Try the full subsite path as a Graph site e.g. host:/sites/OFForms/SupplierForms
-            var sep = sitePath.IndexOf(":/", StringComparison.Ordinal);
-            if (sep > 0)
+            var host = sitePath[..sitePath.IndexOf(":/", StringComparison.Ordinal)];
+            var isRootSite = sitePath.EndsWith(":/sites/root", StringComparison.OrdinalIgnoreCase);
+
+            if (isRootSite)
             {
-                var host = sitePath[..sep];
-                var rel = sitePath[(sep + 1)..]; // e.g. /sites/OFForms
+                // Root site subsites: host:/engp or host:/engp/engt
+                sitePathsToTry.Add($"{host}:/{subsitePath}");
+            }
+            else
+            {
+                // Named site subsites: host:/sites/OFForms/SupplierForms
+                var rel = sitePath[(sitePath.IndexOf(":/", StringComparison.Ordinal) + 1)..]; // e.g. /sites/OFForms
                 sitePathsToTry.Add($"{host}:{rel}/{subsitePath}");
             }
         }
@@ -213,8 +219,7 @@ public class SharePointDigestService : ISharePointDigestService
                     var end = listPart.IndexOf('/');
                     var listName = end > 0 ? Uri.UnescapeDataString(listPart[..end]) : Uri.UnescapeDataString(listPart);
                     var beforeLists = path[..listsIdx].TrimStart('/');
-                    var subsite = string.IsNullOrEmpty(beforeLists) ? null : beforeLists;
-                    return (rootSitePath, subsite, listName);
+                    return (rootSitePath, string.IsNullOrEmpty(beforeLists) ? null : beforeLists, listName);
                 }
                 var segments = path.TrimStart('/').Split('/');
                 if (segments.Length == 1) return (rootSitePath, null, Uri.UnescapeDataString(segments[0]));
@@ -230,7 +235,6 @@ public class SharePointDigestService : ISharePointDigestService
 
             var afterSiteName = afterSites[siteNameEnd..];
 
-            // /Lists/ListName anywhere after site name
             var listsIndex2 = afterSiteName.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
             if (listsIndex2 >= 0)
             {
@@ -241,7 +245,6 @@ public class SharePointDigestService : ISharePointDigestService
                 return (sitePath2, string.IsNullOrEmpty(beforeLists) ? null : beforeLists, listName);
             }
 
-            // No /Lists/ — last segment is library, everything before is subsite
             var remainingSegments = afterSiteName.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (remainingSegments.Length == 0) return (sitePath2, null, "");
             if (remainingSegments.Length == 1) return (sitePath2, null, Uri.UnescapeDataString(remainingSegments[0]));
@@ -256,7 +259,7 @@ public class SharePointDigestService : ISharePointDigestService
         catch { return ("", null, ""); }
     }
 
-    /// <summary>Strips /AllItems.aspx, .aspx files, and trailing /Forms segments.</summary>
+    /// <summary>Strips .aspx view files and trailing /Forms segments.</summary>
     private static string StripViewSuffix(string path)
     {
         if (path.EndsWith(".aspx", StringComparison.OrdinalIgnoreCase))
@@ -289,7 +292,6 @@ public class SharePointDigestService : ISharePointDigestService
         catch { return url; }
     }
 
-    /// <summary>Parse Modified from Graph.</summary>
     private static DateTimeOffset? ParseModifiedValue(object modifiedObj)
     {
         if (modifiedObj is DateTimeOffset dto) return dto;
@@ -502,22 +504,17 @@ public class SharePointDigestService : ISharePointDigestService
             toTry.Add(hostAndPath);
         }
 
-        Exception? lastEx = null;
         foreach (var siteId in toTry.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (string.IsNullOrEmpty(siteId)) continue;
             try { return await _graph!.Sites[siteId].GetAsync(r => { }, cancellationToken).ConfigureAwait(false); }
-            catch (Exception ex) { lastEx = ex; }
+            catch { }
         }
 
-        // Don't log a warning here — callers try multiple paths so failures are expected
         return null;
     }
 
-    /// <summary>
-    /// Gets all lists for a site, paging through results to handle large sites.
-    /// Matches by DisplayName or internal Name, case-insensitive.
-    /// </summary>
+    /// <summary>Gets all lists for a site, paging through results to handle large sites.</summary>
     private async Task<GraphList?> GetListByNameAsync(string siteId, string listName, CancellationToken cancellationToken)
     {
         try
@@ -531,18 +528,13 @@ public class SharePointDigestService : ISharePointDigestService
                 var match = page.Value.FirstOrDefault(l =>
                     string.Equals(l.DisplayName, listName, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(l.Name, listName, StringComparison.OrdinalIgnoreCase));
-
                 if (match != null) return match;
-
-                // No more pages
                 if (page.OdataNextLink == null) break;
-
                 page = await _graph.Sites[siteId].Lists
                     .WithUrl(page.OdataNextLink)
                     .GetAsync(cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
             }
-
             return null;
         }
         catch { return null; }
