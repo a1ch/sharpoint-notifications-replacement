@@ -68,14 +68,11 @@ public class SharePointDigestService : ISharePointDigestService
         }
 
         var items = await _graph!.Sites[site.Id].Lists[list.Id].Items
-            .GetAsync(r =>
-            {
-                r.QueryParameters.Expand = new[] { "fields" };
-            }, cancellationToken).ConfigureAwait(false);
+            .GetAsync(r => { r.QueryParameters.Expand = new[] { "fields" }; }, cancellationToken)
+            .ConfigureAwait(false);
 
         var result = new List<ConfigListItem>();
-        if (items?.Value == null)
-            return result;
+        if (items?.Value == null) return result;
 
         foreach (var item in items.Value)
         {
@@ -83,11 +80,9 @@ public class SharePointDigestService : ISharePointDigestService
             if (fields == null) continue;
             var title = GetFieldString(fields, "Title");
             var email = GetFieldString(fields, "Email");
-            if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(email))
-                continue;
+            if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(email)) continue;
             var brand = GetFieldString(fields, "Brand");
-            var brandTrimmed = string.IsNullOrWhiteSpace(brand) ? null : brand.Trim();
-            result.Add(new ConfigListItem(title.Trim(), email.Trim(), brandTrimmed));
+            result.Add(new ConfigListItem(title.Trim(), email.Trim(), string.IsNullOrWhiteSpace(brand) ? null : brand.Trim()));
         }
 
         var totalRows = items.Value?.Count ?? 0;
@@ -107,45 +102,51 @@ public class SharePointDigestService : ISharePointDigestService
             return Array.Empty<ChangedItem>();
         }
 
-        _logger?.LogInformation("Parsed URL '{Url}' -> site='{SitePath}', subsite='{SubsitePath}', list='{ListName}'", listOrLibraryUrl, sitePath, subsitePath ?? "(none)", listName);
+        _logger?.LogInformation("Parsed URL '{Url}' -> site='{SitePath}', subsite='{SubsitePath}', list='{ListName}'",
+            listOrLibraryUrl, sitePath, subsitePath ?? "(none)", listName);
 
-        var site = await GetSiteByPathAsync(sitePath, cancellationToken).ConfigureAwait(false);
-        if (site?.Id == null)
-        {
-            _logger?.LogWarning("Site not found for path '{SitePath}' (from URL: {Url})", sitePath, listOrLibraryUrl);
-            return Array.Empty<ChangedItem>();
-        }
+        // Build ordered list of site paths to try, from most specific to least specific.
+        // This handles classic subsites which Graph can sometimes resolve directly via full path
+        // even though it won't enumerate them as child sites.
+        var sitePathsToTry = new List<string>();
 
-        // Try to find the list — first on the parent site, then on the subsite if one exists
-        string? resolvedSiteId = null;
-        GraphList? list = null;
-
-        // If a subsite path is present, try the subsite first
         if (!string.IsNullOrEmpty(subsitePath))
         {
-            var subsite = await GetSubsiteByPathAsync(site.Id, subsitePath, cancellationToken).ConfigureAwait(false);
-            if (subsite?.Id != null)
+            // Try the full subsite path as a Graph site e.g. host:/sites/OFForms/SupplierForms
+            var sep = sitePath.IndexOf(":/", StringComparison.Ordinal);
+            if (sep > 0)
             {
-                list = await GetListByNameAsync(subsite.Id, listName, cancellationToken).ConfigureAwait(false);
-                if (list?.Id != null)
-                {
-                    resolvedSiteId = subsite.Id;
-                    _logger?.LogInformation("Found list '{ListName}' on subsite '{SubsiteId}'", listName, subsite.Id);
-                }
+                var host = sitePath[..sep];
+                var rel = sitePath[(sep + 1)..]; // e.g. /sites/OFForms
+                sitePathsToTry.Add($"{host}:{rel}/{subsitePath}");
             }
         }
 
-        // Fall back to parent site
-        if (list?.Id == null)
+        sitePathsToTry.Add(sitePath); // always try the parent site last
+
+        string? resolvedSiteId = null;
+        GraphList? list = null;
+        Site? resolvedSite = null;
+
+        foreach (var sp in sitePathsToTry)
         {
-            list = await GetListByNameAsync(site.Id, listName, cancellationToken).ConfigureAwait(false);
-            if (list?.Id != null)
-                resolvedSiteId = site.Id;
+            var candidate = await GetSiteByPathAsync(sp, cancellationToken).ConfigureAwait(false);
+            if (candidate?.Id == null) continue;
+
+            var candidateList = await GetListByNameAsync(candidate.Id, listName, cancellationToken).ConfigureAwait(false);
+            if (candidateList?.Id == null) continue;
+
+            resolvedSite = candidate;
+            resolvedSiteId = candidate.Id;
+            list = candidateList;
+            _logger?.LogInformation("Resolved list '{ListName}' on site '{SitePath}' (id={SiteId})", listName, sp, resolvedSiteId);
+            break;
         }
 
         if (list?.Id == null || resolvedSiteId == null)
         {
-            _logger?.LogWarning("List '{ListName}' not found on site or subsite (from URL: {Url})", listName, listOrLibraryUrl);
+            _logger?.LogWarning("List '{ListName}' not found on any candidate site (from URL: {Url}). Tried: {Tried}",
+                listName, listOrLibraryUrl, string.Join(", ", sitePathsToTry));
             return Array.Empty<ChangedItem>();
         }
 
@@ -160,11 +161,9 @@ public class SharePointDigestService : ISharePointDigestService
             r.QueryParameters.Top = 999;
         }, cancellationToken).ConfigureAwait(false);
 
-        if (page?.Value != null)
-            allItems.AddRange(page.Value);
+        if (page?.Value != null) allItems.AddRange(page.Value);
 
-        var baseSite = await _graph!.Sites[resolvedSiteId].GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-        var baseWebUrl = baseSite?.WebUrl ?? site.WebUrl ?? "";
+        var baseWebUrl = resolvedSite?.WebUrl ?? "";
 
         var results = new List<ChangedItem>();
         foreach (var item in allItems)
@@ -190,13 +189,7 @@ public class SharePointDigestService : ISharePointDigestService
 
     /// <summary>
     /// Parses a SharePoint URL into (sitePath, subsitePath, listName).
-    /// subsitePath is the server-relative path of the subsite within the parent site (e.g. "SupplierForms" or "ed74a958-...").
-    /// Handles:
-    ///   /sites/SiteName/Lists/ListName/AllItems.aspx
-    ///   /sites/SiteName/SubSite/Lists/ListName/AllItems.aspx
-    ///   /sites/SiteName/SubSite/LibraryName/Forms/AllItems.aspx
-    ///   /sites/SiteName/LibraryName/Forms/AllItems.aspx
-    ///   /rootSubsite/childSubsite/LibraryName
+    /// Handles all common URL formats including subsites and view suffixes.
     /// </summary>
     private static (string sitePath, string? subsitePath, string listName) ParseListOrLibraryUrl(string url)
     {
@@ -204,8 +197,6 @@ public class SharePointDigestService : ISharePointDigestService
         {
             var uri = new Uri(url);
             var path = uri.AbsolutePath.TrimEnd('/');
-
-            // Strip trailing view suffixes: /AllItems.aspx, /Forms/AllItems.aspx
             path = StripViewSuffix(path);
 
             var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
@@ -213,105 +204,68 @@ public class SharePointDigestService : ISharePointDigestService
             // Root site collection (no /sites/ segment) e.g. /itsp/itst/LibraryName
             if (sitesIndex < 0)
             {
-                if (string.IsNullOrEmpty(path) || path == "/")
-                    return ("", null, "");
-
+                if (string.IsNullOrEmpty(path) || path == "/") return ("", null, "");
                 var rootSitePath = $"{uri.Host}:/sites/root";
-                var segments = path.TrimStart('/').Split('/');
-
-                // Check for /Lists/ pattern first
                 var listsIdx = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
                 if (listsIdx >= 0)
                 {
                     var listPart = path[(listsIdx + 7)..];
                     var end = listPart.IndexOf('/');
                     var listName = end > 0 ? Uri.UnescapeDataString(listPart[..end]) : Uri.UnescapeDataString(listPart);
-                    // Everything before /Lists/ after the first segment is the subsite path
                     var beforeLists = path[..listsIdx].TrimStart('/');
-                    var subsiteSegments = beforeLists.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                    var subsite = subsiteSegments.Length > 0 ? string.Join("/", subsiteSegments) : null;
+                    var subsite = string.IsNullOrEmpty(beforeLists) ? null : beforeLists;
                     return (rootSitePath, subsite, listName);
                 }
-
-                // No /Lists/ — last segment is library name, everything before is subsite path
-                if (segments.Length == 1)
-                    return (rootSitePath, null, Uri.UnescapeDataString(segments[0]));
-
-                var libName = Uri.UnescapeDataString(segments[^1]);
-                var subsitePath = string.Join("/", segments[..^1]);
-                return (rootSitePath, subsitePath, libName);
+                var segments = path.TrimStart('/').Split('/');
+                if (segments.Length == 1) return (rootSitePath, null, Uri.UnescapeDataString(segments[0]));
+                return (rootSitePath, string.Join("/", segments[..^1]), Uri.UnescapeDataString(segments[^1]));
             }
 
             // /sites/SiteName/...
             var afterSites = path[sitesIndex..];
-            var siteNameEnd = afterSites.IndexOf('/', 7); // skip "/sites/"
+            var siteNameEnd = afterSites.IndexOf('/', 7);
             var siteRelativePath = siteNameEnd > 0 ? afterSites[..siteNameEnd] : afterSites;
             var sitePath2 = $"{uri.Host}:{siteRelativePath}";
+            if (siteNameEnd < 0) return (sitePath2, null, "");
 
-            if (siteNameEnd < 0)
-                return (sitePath2, null, "");
+            var afterSiteName = afterSites[siteNameEnd..];
 
-            var afterSiteName = afterSites[siteNameEnd..]; // starts with /
-
-            // Check for /Lists/ anywhere after the site name
+            // /Lists/ListName anywhere after site name
             var listsIndex2 = afterSiteName.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
             if (listsIndex2 >= 0)
             {
                 var listPart = afterSiteName[(listsIndex2 + 7)..];
                 var end = listPart.IndexOf('/');
                 var listName = end > 0 ? Uri.UnescapeDataString(listPart[..end]) : Uri.UnescapeDataString(listPart);
-
-                // Anything between the site name and /Lists/ is a subsite path
                 var beforeLists = afterSiteName[..listsIndex2].Trim('/');
-                var subsite = string.IsNullOrEmpty(beforeLists) ? null : beforeLists;
-                return (sitePath2, subsite, listName);
+                return (sitePath2, string.IsNullOrEmpty(beforeLists) ? null : beforeLists, listName);
             }
 
-            // No /Lists/ — walk segments: last is library name, everything before is subsite
+            // No /Lists/ — last segment is library, everything before is subsite
             var remainingSegments = afterSiteName.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (remainingSegments.Length == 0) return (sitePath2, null, "");
+            if (remainingSegments.Length == 1) return (sitePath2, null, Uri.UnescapeDataString(remainingSegments[0]));
 
-            if (remainingSegments.Length == 0)
-                return (sitePath2, null, "");
-
-            if (remainingSegments.Length == 1)
-                return (sitePath2, null, Uri.UnescapeDataString(remainingSegments[0]));
-
-            // Last segment is the library, everything before is subsite
             var libraryName = Uri.UnescapeDataString(remainingSegments[^1]);
-            var subsitePart = string.Join("/", remainingSegments[..^1]);
-
-            // Skip known non-subsite segments
             if (libraryName.StartsWith("_", StringComparison.Ordinal) ||
                 libraryName.Equals("Forms", StringComparison.OrdinalIgnoreCase))
                 return (sitePath2, null, "");
 
-            return (sitePath2, subsitePart, libraryName);
+            return (sitePath2, string.Join("/", remainingSegments[..^1]), libraryName);
         }
-        catch
-        {
-            return ("", null, "");
-        }
+        catch { return ("", null, ""); }
     }
 
-    /// <summary>
-    /// Strips trailing view/form suffixes from a SharePoint path.
-    ///   .../VendorCreationFormData/AllItems.aspx  -> .../VendorCreationFormData
-    ///   .../Shared Documents/Forms/AllItems.aspx  -> .../Shared Documents
-    /// </summary>
+    /// <summary>Strips /AllItems.aspx, .aspx files, and trailing /Forms segments.</summary>
     private static string StripViewSuffix(string path)
     {
-        // Strip .aspx file
         if (path.EndsWith(".aspx", StringComparison.OrdinalIgnoreCase))
         {
             var lastSlash = path.LastIndexOf('/');
-            if (lastSlash > 0)
-                path = path[..lastSlash];
+            if (lastSlash > 0) path = path[..lastSlash];
         }
-
-        // Strip trailing /Forms segment
         if (path.EndsWith("/Forms", StringComparison.OrdinalIgnoreCase))
             path = path[..^6];
-
         return path.TrimEnd('/');
     }
 
@@ -329,57 +283,13 @@ public class SharePointDigestService : ISharePointDigestService
                 var sitePath = nextSlash > 0 ? afterSites[..nextSlash] : afterSites;
                 return $"{uri.Host}:{sitePath}";
             }
-            if (string.IsNullOrEmpty(path) || path == "/")
-                return $"{uri.Host}:/sites/root";
+            if (string.IsNullOrEmpty(path) || path == "/") return $"{uri.Host}:/sites/root";
             return $"{uri.Host}:{path}";
         }
-        catch
-        {
-            return url;
-        }
+        catch { return url; }
     }
 
-    /// <summary>
-    /// Looks up a subsite within a parent site by its server-relative subsite path.
-    /// e.g. subsitePath = "SupplierForms" or "ed74a958-62b4-45b9-9426-a8ca925037f7"
-    /// </summary>
-    private async Task<Site?> GetSubsiteByPathAsync(string parentSiteId, string subsitePath, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var subsites = await _graph!.Sites[parentSiteId].Sites
-                .GetAsync(r => r.QueryParameters.Top = 200, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (subsites?.Value == null) return null;
-
-            // Match by the last segment of the subsite's server-relative URL
-            var subsiteSegment = subsitePath.Split('/').Last();
-
-            var match = subsites.Value.FirstOrDefault(s =>
-            {
-                if (s.WebUrl == null) return false;
-                var rel = new Uri(s.WebUrl).AbsolutePath.TrimEnd('/');
-                var lastSeg = rel.Split('/').Last();
-                return string.Equals(lastSeg, subsiteSegment, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(rel.TrimStart('/'), subsitePath, StringComparison.OrdinalIgnoreCase);
-            });
-
-            if (match != null)
-                _logger?.LogInformation("Resolved subsite '{SubsitePath}' -> '{WebUrl}'", subsitePath, match.WebUrl);
-            else
-                _logger?.LogWarning("Subsite '{SubsitePath}' not found under site '{ParentSiteId}'", subsitePath, parentSiteId);
-
-            return match;
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogWarning(ex, "Failed to enumerate subsites for '{ParentSiteId}'", parentSiteId);
-            return null;
-        }
-    }
-
-    /// <summary>Parse Modified from Graph (DateTimeOffset, string, JsonElement, Json, or ToString).</summary>
+    /// <summary>Parse Modified from Graph.</summary>
     private static DateTimeOffset? ParseModifiedValue(object modifiedObj)
     {
         if (modifiedObj is DateTimeOffset dto) return dto;
@@ -451,7 +361,6 @@ public class SharePointDigestService : ISharePointDigestService
             if (identity == null) continue;
             if (!string.IsNullOrWhiteSpace(identity.DisplayName)) return identity.DisplayName.Trim();
             if (identity.AdditionalData != null)
-            {
                 foreach (var want in new[] { "email", "mail", "userPrincipalName" })
                     foreach (var kv in identity.AdditionalData)
                     {
@@ -459,7 +368,6 @@ public class SharePointDigestService : ISharePointDigestService
                         var s = GraphValueToTrimmedString(kv.Value);
                         if (!string.IsNullOrWhiteSpace(s)) return s;
                     }
-            }
             if (!string.IsNullOrWhiteSpace(identity.Id) && identity.Id.Contains('@', StringComparison.Ordinal))
                 return identity.Id.Trim();
         }
@@ -492,7 +400,6 @@ public class SharePointDigestService : ISharePointDigestService
         if (o is string s) return NormalizeClaimsOrString(s);
         if (o is JsonElement je) return ParsePersonFromJsonElement(je);
         if (o is Microsoft.Graph.Models.Json j && j.AdditionalData != null)
-        {
             foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
                 foreach (var kv in j.AdditionalData)
                 {
@@ -500,16 +407,13 @@ public class SharePointDigestService : ISharePointDigestService
                     var str = GraphValueToTrimmedString(kv.Value);
                     if (!string.IsNullOrWhiteSpace(str)) return str;
                 }
-        }
         if (o is IDictionary<string, object> nested)
-        {
             foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
             {
                 if (!TryGetFieldValue(nested, want, out var inner) || inner == null) continue;
                 var str = ParsePersonOrClaimsField(inner);
                 if (!string.IsNullOrWhiteSpace(str)) return str;
             }
-        }
         try
         {
             var json = JsonSerializer.Serialize(o);
@@ -585,54 +489,61 @@ public class SharePointDigestService : ISharePointDigestService
     private async Task<Site?> GetSiteByPathAsync(string hostAndPath, CancellationToken cancellationToken)
     {
         var isRoot = hostAndPath.EndsWith(":/sites/root", StringComparison.OrdinalIgnoreCase);
-        var hostname = isRoot ? hostAndPath.AsSpan(0, hostAndPath.IndexOf(":/", StringComparison.Ordinal)).ToString() : null;
-
         var toTry = new List<string>();
+
         if (isRoot)
         {
             toTry.Add("root");
-            if (!string.IsNullOrEmpty(hostname)) toTry.Add(hostname!);
+            var hostname = hostAndPath[..hostAndPath.IndexOf(":/", StringComparison.Ordinal)];
+            if (!string.IsNullOrEmpty(hostname)) toTry.Add(hostname);
         }
         else
         {
             toTry.Add(hostAndPath);
-            var sep = hostAndPath.IndexOf(":/", StringComparison.Ordinal);
-            if (sep > 0)
-            {
-                var host = hostAndPath[..sep];
-                var rel = hostAndPath[(sep + 2)..].TrimStart('/');
-                if (!string.IsNullOrEmpty(rel) && !rel.StartsWith("sites/", StringComparison.OrdinalIgnoreCase))
-                {
-                    var firstSeg = rel.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-                    if (!string.IsNullOrEmpty(firstSeg))
-                        toTry.Add($"{host}:/sites/{firstSeg}");
-                }
-            }
         }
 
         Exception? lastEx = null;
         foreach (var siteId in toTry.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (string.IsNullOrEmpty(siteId)) continue;
-            try { return await _graph!.Sites[siteId].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false); }
+            try { return await _graph!.Sites[siteId].GetAsync(r => { }, cancellationToken).ConfigureAwait(false); }
             catch (Exception ex) { lastEx = ex; }
         }
 
-        _logger?.LogWarning(lastEx,
-            "GetSiteByPathAsync failed. Tried: {Ids}. Last error: {Message}",
-            string.Join(", ", toTry.Distinct(StringComparer.OrdinalIgnoreCase)),
-            lastEx?.Message ?? "(none)");
+        // Don't log a warning here — callers try multiple paths so failures are expected
         return null;
     }
 
+    /// <summary>
+    /// Gets all lists for a site, paging through results to handle large sites.
+    /// Matches by DisplayName or internal Name, case-insensitive.
+    /// </summary>
     private async Task<GraphList?> GetListByNameAsync(string siteId, string listName, CancellationToken cancellationToken)
     {
         try
         {
-            var lists = await _graph!.Sites[siteId].Lists.GetAsync(r => r.QueryParameters.Top = 500, cancellationToken).ConfigureAwait(false);
-            return lists?.Value?.FirstOrDefault(l =>
-                string.Equals(l.DisplayName, listName, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(l.Name, listName, StringComparison.OrdinalIgnoreCase));
+            var page = await _graph!.Sites[siteId].Lists
+                .GetAsync(r => r.QueryParameters.Top = 1000, cancellationToken)
+                .ConfigureAwait(false);
+
+            while (page?.Value != null)
+            {
+                var match = page.Value.FirstOrDefault(l =>
+                    string.Equals(l.DisplayName, listName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(l.Name, listName, StringComparison.OrdinalIgnoreCase));
+
+                if (match != null) return match;
+
+                // No more pages
+                if (page.OdataNextLink == null) break;
+
+                page = await _graph.Sites[siteId].Lists
+                    .WithUrl(page.OdataNextLink)
+                    .GetAsync(cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return null;
         }
         catch { return null; }
     }
