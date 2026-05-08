@@ -13,8 +13,7 @@ using GraphList = Microsoft.Graph.Models.List;
 public class SharePointDigestService : ISharePointDigestService
 {
     private GraphServiceClient? _graph;
-    private string? _configSitePath;
-    private string? _configSiteUrl;
+    private string? _configListUrl;
     private string? _configListName;
     private readonly object _initLock = new();
     private readonly ILogger<SharePointDigestService>? _logger;
@@ -41,33 +40,55 @@ public class SharePointDigestService : ISharePointDigestService
                 throw new InvalidOperationException("Add these Application settings in the Function App: " + string.Join(", ", missing));
             var configSiteUrl = Environment.GetEnvironmentVariable("CONFIG_SITE_URL") ?? "";
             if (string.IsNullOrEmpty(configSiteUrl))
-                throw new InvalidOperationException("Add Application setting CONFIG_SITE_URL (e.g. https://tenant.sharepoint.com/sites/MySite).");
+                throw new InvalidOperationException("Add Application setting CONFIG_SITE_URL (e.g. https://tenant.sharepoint.com/itsp/Lists/Digest%20Subscriptions).");
             var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
             _graph = new GraphServiceClient(credential);
             _configListName = Environment.GetEnvironmentVariable("CONFIG_LIST_NAME") ?? "Digest Subscriptions";
-            _configSiteUrl = configSiteUrl;
-            _configSitePath = GetSitePathFromUrl(configSiteUrl);
+            // CONFIG_SITE_URL can be the full list URL or just the site URL
+            _configListUrl = configSiteUrl;
         }
     }
 
     public async Task<IReadOnlyList<ConfigListItem>> GetConfigListItemsAsync(CancellationToken cancellationToken = default)
     {
         EnsureInitialized();
-        var site = await GetSiteByPathAsync(_configSitePath!, cancellationToken).ConfigureAwait(false);
-        if (site?.Id == null)
+
+        // Use the same subsite-aware resolution as GetRecentChangesAsync
+        var (sitePath, subsitePath, parsedListName) = ParseListOrLibraryUrl(_configListUrl!);
+
+        // If the URL contained a list name (e.g. .../Lists/Digest%20Subscriptions), use it;
+        // otherwise fall back to CONFIG_LIST_NAME env var
+        var listName = !string.IsNullOrEmpty(parsedListName) ? parsedListName : _configListName!;
+
+        var sitePathsToTry = new List<string>();
+        if (!string.IsNullOrEmpty(subsitePath))
+            sitePathsToTry.Add($"{sitePath}/{subsitePath}");
+        sitePathsToTry.Add(sitePath);
+
+        string? resolvedSiteId = null;
+        GraphList? list = null;
+
+        foreach (var sp in sitePathsToTry)
         {
-            _logger?.LogWarning("Config site not found. CONFIG_SITE_URL={ConfigSiteUrl} (resolved to path: {SitePath}). Check URL and app permission Sites.Read.All.", _configSiteUrl, _configSitePath);
+            if (string.IsNullOrEmpty(sp)) continue;
+            var candidate = await GetSiteByPathAsync(sp, cancellationToken).ConfigureAwait(false);
+            if (candidate?.Id == null) continue;
+            var candidateList = await GetListByNameAsync(candidate.Id, listName, cancellationToken).ConfigureAwait(false);
+            if (candidateList?.Id == null) continue;
+            resolvedSiteId = candidate.Id;
+            list = candidateList;
+            _logger?.LogInformation("Config list '{ListName}' resolved on site '{SitePath}'", listName, sp);
+            break;
+        }
+
+        if (list?.Id == null || resolvedSiteId == null)
+        {
+            _logger?.LogWarning("Config list '{ListName}' not found. CONFIG_SITE_URL={Url}. Tried: {Tried}",
+                listName, _configListUrl, string.Join(", ", sitePathsToTry));
             return Array.Empty<ConfigListItem>();
         }
 
-        var list = await GetListByNameAsync(site.Id, _configListName!, cancellationToken).ConfigureAwait(false);
-        if (list?.Id == null)
-        {
-            _logger?.LogWarning("Config list '{ListName}' not found on site. Check CONFIG_LIST_NAME and that the list exists.", _configListName);
-            return Array.Empty<ConfigListItem>();
-        }
-
-        var items = await _graph!.Sites[site.Id].Lists[list.Id].Items
+        var items = await _graph!.Sites[resolvedSiteId].Lists[list.Id].Items
             .GetAsync(r => { r.QueryParameters.Expand = new[] { "fields" }; }, cancellationToken)
             .ConfigureAwait(false);
 
@@ -105,19 +126,10 @@ public class SharePointDigestService : ISharePointDigestService
         _logger?.LogInformation("Parsed URL '{Url}' -> site='{SitePath}', subsite='{SubsitePath}', list='{ListName}'",
             listOrLibraryUrl, sitePath, subsitePath ?? "(none)", listName);
 
-        // Build ordered list of site paths to try, most specific first.
-        // Graph can resolve classic subsites via their full server-relative path.
         var sitePathsToTry = new List<string>();
-
         if (!string.IsNullOrEmpty(subsitePath))
-        {
-            // Try the full subsite path as a Graph site path e.g.:
-            //   Named site subsite:  host:/sites/OFForms/SupplierForms
-            //   Root site subsite:   host:/engp/engt
             sitePathsToTry.Add($"{sitePath}/{subsitePath}");
-        }
-
-        sitePathsToTry.Add(sitePath); // always try the parent site last
+        sitePathsToTry.Add(sitePath);
 
         string? resolvedSiteId = null;
         GraphList? list = null;
@@ -127,10 +139,8 @@ public class SharePointDigestService : ISharePointDigestService
         {
             var candidate = await GetSiteByPathAsync(sp, cancellationToken).ConfigureAwait(false);
             if (candidate?.Id == null) continue;
-
             var candidateList = await GetListByNameAsync(candidate.Id, listName, cancellationToken).ConfigureAwait(false);
             if (candidateList?.Id == null) continue;
-
             resolvedSite = candidate;
             resolvedSiteId = candidate.Id;
             list = candidateList;
@@ -184,12 +194,8 @@ public class SharePointDigestService : ISharePointDigestService
 
     /// <summary>
     /// Parses a SharePoint URL into (sitePath, subsitePath, listName).
-    ///
-    /// sitePath uses Graph's host:path notation:
-    ///   Named site:  streamflogroup.sharepoint.com:/sites/OFForms
-    ///   Root site:   streamflogroup.sharepoint.com  (no colon/path — Graph uses hostname for root)
-    ///
-    /// subsitePath is everything between the site and the list, e.g. "SupplierForms" or "engp/engt"
+    /// sitePath: host:/sites/SiteName for named sites, or just hostname for root collection.
+    /// subsitePath: segments between the site and the list/library.
     /// </summary>
     private static (string sitePath, string? subsitePath, string listName) ParseListOrLibraryUrl(string url)
     {
@@ -201,12 +207,11 @@ public class SharePointDigestService : ISharePointDigestService
 
             var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
 
-            // Root collection URLs — no /sites/ segment e.g. /engp/engt/Documents
+            // Root collection URLs — no /sites/ segment e.g. /engp/engt/Documents or /itsp/Lists/Digest Subscriptions
             if (sitesIndex < 0)
             {
                 if (string.IsNullOrEmpty(path) || path == "/") return ("", null, "");
 
-                // Root site in Graph is just the hostname
                 var rootSitePath = uri.Host;
 
                 var listsIdx = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
@@ -268,26 +273,6 @@ public class SharePointDigestService : ISharePointDigestService
         if (path.EndsWith("/Forms", StringComparison.OrdinalIgnoreCase))
             path = path[..^6];
         return path.TrimEnd('/');
-    }
-
-    private static string GetSitePathFromUrl(string url)
-    {
-        try
-        {
-            var uri = new Uri(url);
-            var path = uri.AbsolutePath.TrimEnd('/');
-            var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
-            if (sitesIndex >= 0)
-            {
-                var afterSites = path[sitesIndex..];
-                var nextSlash = afterSites.IndexOf('/', 7);
-                var sitePath = nextSlash > 0 ? afterSites[..nextSlash] : afterSites;
-                return $"{uri.Host}:{sitePath}";
-            }
-            // Root site collection — just the hostname
-            return uri.Host;
-        }
-        catch { return url; }
     }
 
     private static DateTimeOffset? ParseModifiedValue(object modifiedObj)
@@ -488,11 +473,7 @@ public class SharePointDigestService : ISharePointDigestService
 
     private async Task<Site?> GetSiteByPathAsync(string hostAndPath, CancellationToken cancellationToken)
     {
-        // Pure hostname = root site collection (e.g. "streamflogroup.sharepoint.com")
-        // host:path = named site or subsite (e.g. "streamflogroup.sharepoint.com:/sites/OFForms/SupplierForms")
-        var siteId = hostAndPath.Contains(":/", StringComparison.Ordinal) ? hostAndPath : hostAndPath;
-
-        try { return await _graph!.Sites[siteId].GetAsync(r => { }, cancellationToken).ConfigureAwait(false); }
+        try { return await _graph!.Sites[hostAndPath].GetAsync(r => { }, cancellationToken).ConfigureAwait(false); }
         catch { return null; }
     }
 
