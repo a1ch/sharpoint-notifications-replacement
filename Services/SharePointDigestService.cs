@@ -100,14 +100,14 @@ public class SharePointDigestService : ISharePointDigestService
     public async Task<IReadOnlyList<ChangedItem>> GetRecentChangesAsync(string listOrLibraryUrl, DateTimeOffset sinceUtc, CancellationToken cancellationToken = default)
     {
         EnsureInitialized();
-        var (sitePath, listName) = ParseListOrLibraryUrl(listOrLibraryUrl);
+        var (sitePath, subsitePath, listName) = ParseListOrLibraryUrl(listOrLibraryUrl);
         if (string.IsNullOrEmpty(sitePath) || string.IsNullOrEmpty(listName))
         {
             _logger?.LogWarning("Could not parse site path or list name from URL: {Url}", listOrLibraryUrl);
             return Array.Empty<ChangedItem>();
         }
 
-        _logger?.LogInformation("Parsed URL '{Url}' -> site='{SitePath}', list='{ListName}'", listOrLibraryUrl, sitePath, listName);
+        _logger?.LogInformation("Parsed URL '{Url}' -> site='{SitePath}', subsite='{SubsitePath}', list='{ListName}'", listOrLibraryUrl, sitePath, subsitePath ?? "(none)", listName);
 
         var site = await GetSiteByPathAsync(sitePath, cancellationToken).ConfigureAwait(false);
         if (site?.Id == null)
@@ -116,19 +116,44 @@ public class SharePointDigestService : ISharePointDigestService
             return Array.Empty<ChangedItem>();
         }
 
-        var list = await GetListByNameAsync(site.Id, listName, cancellationToken).ConfigureAwait(false);
+        // Try to find the list — first on the parent site, then on the subsite if one exists
+        string? resolvedSiteId = null;
+        GraphList? list = null;
+
+        // If a subsite path is present, try the subsite first
+        if (!string.IsNullOrEmpty(subsitePath))
+        {
+            var subsite = await GetSubsiteByPathAsync(site.Id, subsitePath, cancellationToken).ConfigureAwait(false);
+            if (subsite?.Id != null)
+            {
+                list = await GetListByNameAsync(subsite.Id, listName, cancellationToken).ConfigureAwait(false);
+                if (list?.Id != null)
+                {
+                    resolvedSiteId = subsite.Id;
+                    _logger?.LogInformation("Found list '{ListName}' on subsite '{SubsiteId}'", listName, subsite.Id);
+                }
+            }
+        }
+
+        // Fall back to parent site
         if (list?.Id == null)
         {
-            _logger?.LogWarning("List '{ListName}' not found on site '{SiteId}' (from URL: {Url})", listName, site.Id, listOrLibraryUrl);
+            list = await GetListByNameAsync(site.Id, listName, cancellationToken).ConfigureAwait(false);
+            if (list?.Id != null)
+                resolvedSiteId = site.Id;
+        }
+
+        if (list?.Id == null || resolvedSiteId == null)
+        {
+            _logger?.LogWarning("List '{ListName}' not found on site or subsite (from URL: {Url})", listName, listOrLibraryUrl);
             return Array.Empty<ChangedItem>();
         }
 
-        // Graph filter: use Modified (OData date format)
         var filterDate = sinceUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
         var filter = $"fields/Modified ge '{filterDate}'";
 
         var allItems = new List<ListItem>();
-        var page = await _graph!.Sites[site.Id].Lists[list.Id].Items.GetAsync(r =>
+        var page = await _graph!.Sites[resolvedSiteId].Lists[list.Id].Items.GetAsync(r =>
         {
             r.QueryParameters.Expand = new[] { "fields" };
             r.QueryParameters.Filter = filter;
@@ -138,7 +163,9 @@ public class SharePointDigestService : ISharePointDigestService
         if (page?.Value != null)
             allItems.AddRange(page.Value);
 
-        var baseWebUrl = site.WebUrl ?? "";
+        var baseSite = await _graph!.Sites[resolvedSiteId].GetAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var baseWebUrl = baseSite?.WebUrl ?? site.WebUrl ?? "";
+
         var results = new List<ChangedItem>();
         foreach (var item in allItems)
         {
@@ -162,98 +189,118 @@ public class SharePointDigestService : ISharePointDigestService
     }
 
     /// <summary>
-    /// Parses a SharePoint list or library URL into (sitePath, listName) for Graph API use.
-    /// Handles all common URL formats:
-    ///   - https://tenant.sharepoint.com/sites/SiteName/Lists/ListName
-    ///   - https://tenant.sharepoint.com/sites/SiteName/Lists/ListName/AllItems.aspx
-    ///   - https://tenant.sharepoint.com/sites/SiteName/SubSite/Lists/ListName/AllItems.aspx
-    ///   - https://tenant.sharepoint.com/sites/SiteName/LibraryName
-    ///   - https://tenant.sharepoint.com/sites/SiteName/LibraryName/Forms/AllItems.aspx
+    /// Parses a SharePoint URL into (sitePath, subsitePath, listName).
+    /// subsitePath is the server-relative path of the subsite within the parent site (e.g. "SupplierForms" or "ed74a958-...").
+    /// Handles:
+    ///   /sites/SiteName/Lists/ListName/AllItems.aspx
+    ///   /sites/SiteName/SubSite/Lists/ListName/AllItems.aspx
+    ///   /sites/SiteName/SubSite/LibraryName/Forms/AllItems.aspx
+    ///   /sites/SiteName/LibraryName/Forms/AllItems.aspx
+    ///   /rootSubsite/childSubsite/LibraryName
     /// </summary>
-    private static (string sitePath, string listName) ParseListOrLibraryUrl(string url)
+    private static (string sitePath, string? subsitePath, string listName) ParseListOrLibraryUrl(string url)
     {
         try
         {
             var uri = new Uri(url);
-            // Strip query string and fragment, work with the path only
             var path = uri.AbsolutePath.TrimEnd('/');
 
-            // Strip any trailing view file e.g. /AllItems.aspx, /Forms/AllItems.aspx
+            // Strip trailing view suffixes: /AllItems.aspx, /Forms/AllItems.aspx
             path = StripViewSuffix(path);
 
             var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
 
-            // Root site (no /sites/ segment)
+            // Root site collection (no /sites/ segment) e.g. /itsp/itst/LibraryName
             if (sitesIndex < 0)
             {
                 if (string.IsNullOrEmpty(path) || path == "/")
-                    return ("", "");
-                var sitePath = $"{uri.Host}:/sites/root";
+                    return ("", null, "");
+
+                var rootSitePath = $"{uri.Host}:/sites/root";
+                var segments = path.TrimStart('/').Split('/');
+
+                // Check for /Lists/ pattern first
                 var listsIdx = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
                 if (listsIdx >= 0)
                 {
                     var listPart = path[(listsIdx + 7)..];
                     var end = listPart.IndexOf('/');
                     var listName = end > 0 ? Uri.UnescapeDataString(listPart[..end]) : Uri.UnescapeDataString(listPart);
-                    return (sitePath, listName);
+                    // Everything before /Lists/ after the first segment is the subsite path
+                    var beforeLists = path[..listsIdx].TrimStart('/');
+                    var subsiteSegments = beforeLists.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                    var subsite = subsiteSegments.Length > 0 ? string.Join("/", subsiteSegments) : null;
+                    return (rootSitePath, subsite, listName);
                 }
-                else
-                {
-                    var segments = path.TrimStart('/').Split('/');
-                    return (sitePath, segments.Length >= 1 ? Uri.UnescapeDataString(segments[0]) : "");
-                }
+
+                // No /Lists/ — last segment is library name, everything before is subsite path
+                if (segments.Length == 1)
+                    return (rootSitePath, null, Uri.UnescapeDataString(segments[0]));
+
+                var libName = Uri.UnescapeDataString(segments[^1]);
+                var subsitePath = string.Join("/", segments[..^1]);
+                return (rootSitePath, subsitePath, libName);
             }
 
-            // Extract the site name segment: /sites/SiteName
-            var afterSites = path[sitesIndex..]; // starts with /sites/
-            var siteNameEnd = afterSites.IndexOf('/', 7); // find slash after site name (skip "/sites/")
+            // /sites/SiteName/...
+            var afterSites = path[sitesIndex..];
+            var siteNameEnd = afterSites.IndexOf('/', 7); // skip "/sites/"
             var siteRelativePath = siteNameEnd > 0 ? afterSites[..siteNameEnd] : afterSites;
             var sitePath2 = $"{uri.Host}:{siteRelativePath}";
 
             if (siteNameEnd < 0)
-                return (sitePath2, ""); // URL is just /sites/SiteName with nothing after
+                return (sitePath2, null, "");
 
-            // Everything after /sites/SiteName
-            var afterSiteName = afterSites[siteNameEnd..]; // e.g. /Lists/ListName or /SubSite/Lists/ListName or /LibraryName
+            var afterSiteName = afterSites[siteNameEnd..]; // starts with /
 
-            // Look for /Lists/ anywhere in the remaining path — handles subsites transparently
+            // Check for /Lists/ anywhere after the site name
             var listsIndex2 = afterSiteName.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
             if (listsIndex2 >= 0)
             {
                 var listPart = afterSiteName[(listsIndex2 + 7)..];
                 var end = listPart.IndexOf('/');
                 var listName = end > 0 ? Uri.UnescapeDataString(listPart[..end]) : Uri.UnescapeDataString(listPart);
-                return (sitePath2, listName);
+
+                // Anything between the site name and /Lists/ is a subsite path
+                var beforeLists = afterSiteName[..listsIndex2].Trim('/');
+                var subsite = string.IsNullOrEmpty(beforeLists) ? null : beforeLists;
+                return (sitePath2, subsite, listName);
             }
 
-            // No /Lists/ segment — treat first segment after site name as a document library name
-            var remainder = afterSiteName.TrimStart('/');
-            var nextSlash = remainder.IndexOf('/');
-            var librarySegment = nextSlash > 0 ? remainder[..nextSlash] : remainder;
+            // No /Lists/ — walk segments: last is library name, everything before is subsite
+            var remainingSegments = afterSiteName.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
 
-            // Skip known non-library segments like "Forms", "_layouts", etc.
-            if (string.IsNullOrWhiteSpace(librarySegment) ||
-                librarySegment.StartsWith("_", StringComparison.Ordinal) ||
-                librarySegment.Equals("Forms", StringComparison.OrdinalIgnoreCase))
-                return (sitePath2, "");
+            if (remainingSegments.Length == 0)
+                return (sitePath2, null, "");
 
-            return (sitePath2, Uri.UnescapeDataString(librarySegment));
+            if (remainingSegments.Length == 1)
+                return (sitePath2, null, Uri.UnescapeDataString(remainingSegments[0]));
+
+            // Last segment is the library, everything before is subsite
+            var libraryName = Uri.UnescapeDataString(remainingSegments[^1]);
+            var subsitePart = string.Join("/", remainingSegments[..^1]);
+
+            // Skip known non-subsite segments
+            if (libraryName.StartsWith("_", StringComparison.Ordinal) ||
+                libraryName.Equals("Forms", StringComparison.OrdinalIgnoreCase))
+                return (sitePath2, null, "");
+
+            return (sitePath2, subsitePart, libraryName);
         }
         catch
         {
-            return ("", "");
+            return ("", null, "");
         }
     }
 
     /// <summary>
-    /// Strips trailing view/form suffixes from a SharePoint path so the list name can be extracted cleanly.
-    /// Examples:
-    ///   /sites/OFForms/Lists/VendorCreationFormData/AllItems.aspx  -> /sites/OFForms/Lists/VendorCreationFormData
-    ///   /sites/OFForms/Shared Documents/Forms/AllItems.aspx         -> /sites/OFForms/Shared Documents
+    /// Strips trailing view/form suffixes from a SharePoint path.
+    ///   .../VendorCreationFormData/AllItems.aspx  -> .../VendorCreationFormData
+    ///   .../Shared Documents/Forms/AllItems.aspx  -> .../Shared Documents
     /// </summary>
     private static string StripViewSuffix(string path)
     {
-        // Strip .aspx files
+        // Strip .aspx file
         if (path.EndsWith(".aspx", StringComparison.OrdinalIgnoreCase))
         {
             var lastSlash = path.LastIndexOf('/');
@@ -261,7 +308,7 @@ public class SharePointDigestService : ISharePointDigestService
                 path = path[..lastSlash];
         }
 
-        // Strip trailing /Forms segment (document library view folder)
+        // Strip trailing /Forms segment
         if (path.EndsWith("/Forms", StringComparison.OrdinalIgnoreCase))
             path = path[..^6];
 
@@ -292,13 +339,51 @@ public class SharePointDigestService : ISharePointDigestService
         }
     }
 
-    /// <summary>Parse Modified from Graph (DateTimeOffset, string, JsonElement, Json, or ToString). Uses RoundtripKind for ISO 8601.</summary>
+    /// <summary>
+    /// Looks up a subsite within a parent site by its server-relative subsite path.
+    /// e.g. subsitePath = "SupplierForms" or "ed74a958-62b4-45b9-9426-a8ca925037f7"
+    /// </summary>
+    private async Task<Site?> GetSubsiteByPathAsync(string parentSiteId, string subsitePath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var subsites = await _graph!.Sites[parentSiteId].Sites
+                .GetAsync(r => r.QueryParameters.Top = 200, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (subsites?.Value == null) return null;
+
+            // Match by the last segment of the subsite's server-relative URL
+            var subsiteSegment = subsitePath.Split('/').Last();
+
+            var match = subsites.Value.FirstOrDefault(s =>
+            {
+                if (s.WebUrl == null) return false;
+                var rel = new Uri(s.WebUrl).AbsolutePath.TrimEnd('/');
+                var lastSeg = rel.Split('/').Last();
+                return string.Equals(lastSeg, subsiteSegment, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(rel.TrimStart('/'), subsitePath, StringComparison.OrdinalIgnoreCase);
+            });
+
+            if (match != null)
+                _logger?.LogInformation("Resolved subsite '{SubsitePath}' -> '{WebUrl}'", subsitePath, match.WebUrl);
+            else
+                _logger?.LogWarning("Subsite '{SubsitePath}' not found under site '{ParentSiteId}'", subsitePath, parentSiteId);
+
+            return match;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to enumerate subsites for '{ParentSiteId}'", parentSiteId);
+            return null;
+        }
+    }
+
+    /// <summary>Parse Modified from Graph (DateTimeOffset, string, JsonElement, Json, or ToString).</summary>
     private static DateTimeOffset? ParseModifiedValue(object modifiedObj)
     {
-        if (modifiedObj is DateTimeOffset dto)
-            return dto;
-        if (modifiedObj is string s && TryParseDate(s, out var fromStr))
-            return fromStr;
+        if (modifiedObj is DateTimeOffset dto) return dto;
+        if (modifiedObj is string s && TryParseDate(s, out var fromStr)) return fromStr;
         if (modifiedObj is JsonElement je)
         {
             if (je.TryGetDateTimeOffset(out var fromJe)) return fromJe;
@@ -328,18 +413,14 @@ public class SharePointDigestService : ISharePointDigestService
 
     private static string? GetFieldString(IDictionary<string, object>? fields, string name)
     {
-        if (fields == null)
-            return null;
-        if (!TryGetFieldValue(fields, name, out var o) || o == null)
-            return null;
-        if (o is string s)
-            return s;
+        if (fields == null) return null;
+        if (!TryGetFieldValue(fields, name, out var o) || o == null) return null;
+        if (o is string s) return s;
         if (o is Microsoft.Graph.Models.Json j && j.AdditionalData?.TryGetValue("displayName", out var dn) == true)
             return dn?.ToString();
         return o.ToString();
     }
 
-    /// <summary>When Kiota exposes lastModifiedBy only in serialized JSON, recover user display/email.</summary>
     private static string? GetLastModifiedByFromSerializedListItem(ListItem item)
     {
         try
@@ -347,129 +428,88 @@ public class SharePointDigestService : ISharePointDigestService
             var json = JsonSerializer.Serialize(item);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-                return null;
+            if (root.ValueKind != JsonValueKind.Object) return null;
             foreach (var prop in root.EnumerateObject())
             {
-                if (!prop.Name.Equals("lastModifiedBy", StringComparison.OrdinalIgnoreCase))
-                    continue;
+                if (!prop.Name.Equals("lastModifiedBy", StringComparison.OrdinalIgnoreCase)) continue;
                 var lmb = prop.Value;
-                if (lmb.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
-                    return null;
+                if (lmb.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return null;
                 if (lmb.TryGetProperty("user", out var user) && user.ValueKind == JsonValueKind.Object)
                     return ParsePersonFromJsonElement(user);
                 return ParsePersonFromJsonElement(lmb);
             }
         }
-        catch
-        {
-            // ignore
-        }
-
+        catch { }
         return null;
     }
 
-    /// <summary>Graph listItem.lastModifiedBy / createdBy identitySet (preferred over fields.Editor for display names).</summary>
     private static string? GetIdentitySetDisplayName(IdentitySet? identitySet)
     {
-        if (identitySet == null)
-            return null;
-
+        if (identitySet == null) return null;
         foreach (var identity in new[] { identitySet.User, identitySet.Application, identitySet.Device })
         {
-            if (identity == null)
-                continue;
-
-            if (!string.IsNullOrWhiteSpace(identity.DisplayName))
-                return identity.DisplayName.Trim();
-
+            if (identity == null) continue;
+            if (!string.IsNullOrWhiteSpace(identity.DisplayName)) return identity.DisplayName.Trim();
             if (identity.AdditionalData != null)
             {
                 foreach (var want in new[] { "email", "mail", "userPrincipalName" })
-                {
                     foreach (var kv in identity.AdditionalData)
                     {
-                        if (!kv.Key.Equals(want, StringComparison.OrdinalIgnoreCase))
-                            continue;
+                        if (!kv.Key.Equals(want, StringComparison.OrdinalIgnoreCase)) continue;
                         var s = GraphValueToTrimmedString(kv.Value);
-                        if (!string.IsNullOrWhiteSpace(s))
-                            return s;
+                        if (!string.IsNullOrWhiteSpace(s)) return s;
                     }
-                }
             }
-
             if (!string.IsNullOrWhiteSpace(identity.Id) && identity.Id.Contains('@', StringComparison.Ordinal))
                 return identity.Id.Trim();
         }
-
         return null;
     }
 
-    /// <summary>SharePoint "Modified By" via Graph: Editor / ModifiedBy may be objects (LookupValue, Email) or claims strings—not plain displayName.</summary>
     private static string? GetModifiedByDisplayName(IDictionary<string, object> fields)
     {
         foreach (var fieldName in new[] { "Editor", "ModifiedBy", "Modified_x0020_By" })
         {
-            if (!TryGetFieldValue(fields, fieldName, out var o) || o == null)
-                continue;
+            if (!TryGetFieldValue(fields, fieldName, out var o) || o == null) continue;
             var name = ParsePersonOrClaimsField(o);
-            if (!string.IsNullOrWhiteSpace(name))
-                return name;
+            if (!string.IsNullOrWhiteSpace(name)) return name;
         }
-
         foreach (var kv in fields)
         {
-            if (kv.Value == null)
-                continue;
+            if (kv.Value == null) continue;
             var k = kv.Key;
-            if (k.Contains("LookupId", StringComparison.OrdinalIgnoreCase) || k.Contains("LookupValueId", StringComparison.OrdinalIgnoreCase))
-                continue;
-            if (!k.Contains("ditor", StringComparison.OrdinalIgnoreCase) &&
-                !k.Contains("ModifiedBy", StringComparison.OrdinalIgnoreCase))
-                continue;
+            if (k.Contains("LookupId", StringComparison.OrdinalIgnoreCase) || k.Contains("LookupValueId", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!k.Contains("ditor", StringComparison.OrdinalIgnoreCase) && !k.Contains("ModifiedBy", StringComparison.OrdinalIgnoreCase)) continue;
             var name = ParsePersonOrClaimsField(kv.Value);
-            if (!string.IsNullOrWhiteSpace(name))
-                return name;
+            if (!string.IsNullOrWhiteSpace(name)) return name;
         }
-
         return null;
     }
 
     private static string? ParsePersonOrClaimsField(object? o)
     {
-        if (o == null)
-            return null;
-        if (o is string s)
-            return NormalizeClaimsOrString(s);
-        if (o is JsonElement je)
-            return ParsePersonFromJsonElement(je);
+        if (o == null) return null;
+        if (o is string s) return NormalizeClaimsOrString(s);
+        if (o is JsonElement je) return ParsePersonFromJsonElement(je);
         if (o is Microsoft.Graph.Models.Json j && j.AdditionalData != null)
         {
             foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
-            {
                 foreach (var kv in j.AdditionalData)
                 {
-                    if (!kv.Key.Equals(want, StringComparison.OrdinalIgnoreCase))
-                        continue;
+                    if (!kv.Key.Equals(want, StringComparison.OrdinalIgnoreCase)) continue;
                     var str = GraphValueToTrimmedString(kv.Value);
-                    if (!string.IsNullOrWhiteSpace(str))
-                        return str;
+                    if (!string.IsNullOrWhiteSpace(str)) return str;
                 }
-            }
         }
-
         if (o is IDictionary<string, object> nested)
         {
             foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
             {
-                if (!TryGetFieldValue(nested, want, out var inner) || inner == null)
-                    continue;
+                if (!TryGetFieldValue(nested, want, out var inner) || inner == null) continue;
                 var str = ParsePersonOrClaimsField(inner);
-                if (!string.IsNullOrWhiteSpace(str))
-                    return str;
+                if (!string.IsNullOrWhiteSpace(str)) return str;
             }
         }
-
         try
         {
             var json = JsonSerializer.Serialize(o);
@@ -477,104 +517,68 @@ public class SharePointDigestService : ISharePointDigestService
             {
                 using var doc = JsonDocument.Parse(json);
                 var fromJson = ParsePersonFromJsonElement(doc.RootElement);
-                if (!string.IsNullOrWhiteSpace(fromJson))
-                    return fromJson;
+                if (!string.IsNullOrWhiteSpace(fromJson)) return fromJson;
             }
         }
-        catch
-        {
-            // ignore
-        }
-
+        catch { }
         return null;
     }
 
     private static string? ParsePersonFromJsonElement(JsonElement je)
     {
-        if (je.ValueKind == JsonValueKind.String)
-            return NormalizeClaimsOrString(je.GetString() ?? "");
-        if (je.ValueKind != JsonValueKind.Object)
-            return null;
+        if (je.ValueKind == JsonValueKind.String) return NormalizeClaimsOrString(je.GetString() ?? "");
+        if (je.ValueKind != JsonValueKind.Object) return null;
         foreach (var want in new[] { "displayName", "LookupValue", "Email", "Title", "Name", "preferredName", "mail" })
-        {
             foreach (var prop in je.EnumerateObject())
             {
-                if (!prop.Name.Equals(want, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                if (!prop.Name.Equals(want, StringComparison.OrdinalIgnoreCase)) continue;
                 if (prop.Value.ValueKind == JsonValueKind.String)
                 {
                     var v = prop.Value.GetString();
-                    if (!string.IsNullOrWhiteSpace(v))
-                        return v.Trim();
+                    if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
                 }
             }
-        }
-
         foreach (var prop in je.EnumerateObject())
         {
-            if (prop.Value.ValueKind != JsonValueKind.String)
-                continue;
+            if (prop.Value.ValueKind != JsonValueKind.String) continue;
             var v = prop.Value.GetString()?.Trim();
-            if (!string.IsNullOrWhiteSpace(v) && v.Contains('@', StringComparison.Ordinal))
-                return v;
+            if (!string.IsNullOrWhiteSpace(v) && v.Contains('@', StringComparison.Ordinal)) return v;
         }
-
         return null;
     }
 
     private static string? GraphValueToTrimmedString(object? v)
     {
-        if (v == null)
-            return null;
-        if (v is string ss)
-            return string.IsNullOrWhiteSpace(ss) ? null : ss.Trim();
+        if (v == null) return null;
+        if (v is string ss) return string.IsNullOrWhiteSpace(ss) ? null : ss.Trim();
         if (v is JsonElement jee)
         {
-            if (jee.ValueKind == JsonValueKind.String)
-            {
-                var t = jee.GetString()?.Trim();
-                return string.IsNullOrWhiteSpace(t) ? null : t;
-            }
-
-            if (jee.ValueKind == JsonValueKind.Object)
-                return ParsePersonFromJsonElement(jee);
+            if (jee.ValueKind == JsonValueKind.String) { var t = jee.GetString()?.Trim(); return string.IsNullOrWhiteSpace(t) ? null : t; }
+            if (jee.ValueKind == JsonValueKind.Object) return ParsePersonFromJsonElement(jee);
         }
-
         return null;
     }
 
     private static string? NormalizeClaimsOrString(string s)
     {
         s = s.Trim();
-        if (s.Length == 0)
-            return null;
+        if (s.Length == 0) return null;
         foreach (var marker in new[] { "|membership|", "|windows|", "|claims|" })
         {
             var idx = s.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (idx < 0)
-                continue;
+            if (idx < 0) continue;
             var tail = s[(idx + marker.Length)..].Trim();
-            if (tail.Length > 0)
-                return tail;
+            if (tail.Length > 0) return tail;
         }
-
         return s;
     }
 
     private static bool TryGetFieldValue(IDictionary<string, object> fields, string name, out object? value)
     {
         value = null;
-        if (fields.TryGetValue(name, out var o))
-        {
-            value = o;
-            return true;
-        }
+        if (fields.TryGetValue(name, out var o)) { value = o; return true; }
         var key = fields.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
-        if (key != null && fields.TryGetValue(key, out var o2))
-        {
-            value = o2;
-            return true;
-        }
+        if (key != null && fields.TryGetValue(key, out var o2)) { value = o2; return true; }
         return false;
     }
 
@@ -597,8 +601,7 @@ public class SharePointDigestService : ISharePointDigestService
             {
                 var host = hostAndPath[..sep];
                 var rel = hostAndPath[(sep + 2)..].TrimStart('/');
-                if (!string.IsNullOrEmpty(rel) &&
-                    !rel.StartsWith("sites/", StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrEmpty(rel) && !rel.StartsWith("sites/", StringComparison.OrdinalIgnoreCase))
                 {
                     var firstSeg = rel.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
                     if (!string.IsNullOrEmpty(firstSeg))
@@ -611,22 +614,14 @@ public class SharePointDigestService : ISharePointDigestService
         foreach (var siteId in toTry.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (string.IsNullOrEmpty(siteId)) continue;
-            try
-            {
-                return await _graph!.Sites[siteId].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                lastEx = ex;
-            }
+            try { return await _graph!.Sites[siteId].GetAsync(requestConfig => { }, cancellationToken).ConfigureAwait(false); }
+            catch (Exception ex) { lastEx = ex; }
         }
 
-        var hint = isRoot
-            ? "For tenant root, tried 'root' and hostname."
-            : $"Tried Graph site ids: {string.Join(", ", toTry.Distinct(StringComparer.OrdinalIgnoreCase))}.";
         _logger?.LogWarning(lastEx,
-            "GetSiteByPathAsync failed ({Hint}) Ensure Application permission Sites.Read.All (admin consent) or Sites.Selected with this site granted to the app. Last error: {Message}",
-            hint, lastEx?.Message ?? "(none)");
+            "GetSiteByPathAsync failed. Tried: {Ids}. Last error: {Message}",
+            string.Join(", ", toTry.Distinct(StringComparer.OrdinalIgnoreCase)),
+            lastEx?.Message ?? "(none)");
         return null;
     }
 
@@ -635,14 +630,10 @@ public class SharePointDigestService : ISharePointDigestService
         try
         {
             var lists = await _graph!.Sites[siteId].Lists.GetAsync(r => r.QueryParameters.Top = 500, cancellationToken).ConfigureAwait(false);
-            var match = lists?.Value?.FirstOrDefault(l =>
+            return lists?.Value?.FirstOrDefault(l =>
                 string.Equals(l.DisplayName, listName, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(l.Name, listName, StringComparison.OrdinalIgnoreCase));
-            return match;
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 }
