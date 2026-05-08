@@ -102,15 +102,26 @@ public class SharePointDigestService : ISharePointDigestService
         EnsureInitialized();
         var (sitePath, listName) = ParseListOrLibraryUrl(listOrLibraryUrl);
         if (string.IsNullOrEmpty(sitePath) || string.IsNullOrEmpty(listName))
+        {
+            _logger?.LogWarning("Could not parse site path or list name from URL: {Url}", listOrLibraryUrl);
             return Array.Empty<ChangedItem>();
+        }
+
+        _logger?.LogInformation("Parsed URL '{Url}' -> site='{SitePath}', list='{ListName}'", listOrLibraryUrl, sitePath, listName);
 
         var site = await GetSiteByPathAsync(sitePath, cancellationToken).ConfigureAwait(false);
         if (site?.Id == null)
+        {
+            _logger?.LogWarning("Site not found for path '{SitePath}' (from URL: {Url})", sitePath, listOrLibraryUrl);
             return Array.Empty<ChangedItem>();
+        }
 
         var list = await GetListByNameAsync(site.Id, listName, cancellationToken).ConfigureAwait(false);
         if (list?.Id == null)
+        {
+            _logger?.LogWarning("List '{ListName}' not found on site '{SiteId}' (from URL: {Url})", listName, site.Id, listOrLibraryUrl);
             return Array.Empty<ChangedItem>();
+        }
 
         // Graph filter: use Modified (OData date format)
         var filterDate = sinceUtc.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
@@ -137,7 +148,6 @@ public class SharePointDigestService : ISharePointDigestService
             DateTimeOffset modified = default;
             if (TryGetFieldValue(fields, "Modified", out var modifiedObj) && modifiedObj != null)
                 modified = ParseModifiedValue(modifiedObj) ?? default;
-            // Prefer listItem.lastModifiedBy (baseItem); SharePoint fields.Editor is often empty or non-string in Graph.
             var modifiedBy = GetIdentitySetDisplayName(item.LastModifiedBy)
                 ?? GetModifiedByDisplayName(fields)
                 ?? GetLastModifiedByFromSerializedListItem(item);
@@ -149,6 +159,137 @@ public class SharePointDigestService : ISharePointDigestService
             results.Add(new ChangedItem(title, webUrl, modified, modifiedBy));
         }
         return results;
+    }
+
+    /// <summary>
+    /// Parses a SharePoint list or library URL into (sitePath, listName) for Graph API use.
+    /// Handles all common URL formats:
+    ///   - https://tenant.sharepoint.com/sites/SiteName/Lists/ListName
+    ///   - https://tenant.sharepoint.com/sites/SiteName/Lists/ListName/AllItems.aspx
+    ///   - https://tenant.sharepoint.com/sites/SiteName/SubSite/Lists/ListName/AllItems.aspx
+    ///   - https://tenant.sharepoint.com/sites/SiteName/LibraryName
+    ///   - https://tenant.sharepoint.com/sites/SiteName/LibraryName/Forms/AllItems.aspx
+    /// </summary>
+    private static (string sitePath, string listName) ParseListOrLibraryUrl(string url)
+    {
+        try
+        {
+            var uri = new Uri(url);
+            // Strip query string and fragment, work with the path only
+            var path = uri.AbsolutePath.TrimEnd('/');
+
+            // Strip any trailing view file e.g. /AllItems.aspx, /Forms/AllItems.aspx
+            path = StripViewSuffix(path);
+
+            var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
+
+            // Root site (no /sites/ segment)
+            if (sitesIndex < 0)
+            {
+                if (string.IsNullOrEmpty(path) || path == "/")
+                    return ("", "");
+                var sitePath = $"{uri.Host}:/sites/root";
+                var listsIdx = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
+                if (listsIdx >= 0)
+                {
+                    var listPart = path[(listsIdx + 7)..];
+                    var end = listPart.IndexOf('/');
+                    var listName = end > 0 ? Uri.UnescapeDataString(listPart[..end]) : Uri.UnescapeDataString(listPart);
+                    return (sitePath, listName);
+                }
+                else
+                {
+                    var segments = path.TrimStart('/').Split('/');
+                    return (sitePath, segments.Length >= 1 ? Uri.UnescapeDataString(segments[0]) : "");
+                }
+            }
+
+            // Extract the site name segment: /sites/SiteName
+            var afterSites = path[sitesIndex..]; // starts with /sites/
+            var siteNameEnd = afterSites.IndexOf('/', 7); // find slash after site name (skip "/sites/")
+            var siteRelativePath = siteNameEnd > 0 ? afterSites[..siteNameEnd] : afterSites;
+            var sitePath2 = $"{uri.Host}:{siteRelativePath}";
+
+            if (siteNameEnd < 0)
+                return (sitePath2, ""); // URL is just /sites/SiteName with nothing after
+
+            // Everything after /sites/SiteName
+            var afterSiteName = afterSites[siteNameEnd..]; // e.g. /Lists/ListName or /SubSite/Lists/ListName or /LibraryName
+
+            // Look for /Lists/ anywhere in the remaining path — handles subsites transparently
+            var listsIndex2 = afterSiteName.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
+            if (listsIndex2 >= 0)
+            {
+                var listPart = afterSiteName[(listsIndex2 + 7)..];
+                var end = listPart.IndexOf('/');
+                var listName = end > 0 ? Uri.UnescapeDataString(listPart[..end]) : Uri.UnescapeDataString(listPart);
+                return (sitePath2, listName);
+            }
+
+            // No /Lists/ segment — treat first segment after site name as a document library name
+            var remainder = afterSiteName.TrimStart('/');
+            var nextSlash = remainder.IndexOf('/');
+            var librarySegment = nextSlash > 0 ? remainder[..nextSlash] : remainder;
+
+            // Skip known non-library segments like "Forms", "_layouts", etc.
+            if (string.IsNullOrWhiteSpace(librarySegment) ||
+                librarySegment.StartsWith("_", StringComparison.Ordinal) ||
+                librarySegment.Equals("Forms", StringComparison.OrdinalIgnoreCase))
+                return (sitePath2, "");
+
+            return (sitePath2, Uri.UnescapeDataString(librarySegment));
+        }
+        catch
+        {
+            return ("", "");
+        }
+    }
+
+    /// <summary>
+    /// Strips trailing view/form suffixes from a SharePoint path so the list name can be extracted cleanly.
+    /// Examples:
+    ///   /sites/OFForms/Lists/VendorCreationFormData/AllItems.aspx  -> /sites/OFForms/Lists/VendorCreationFormData
+    ///   /sites/OFForms/Shared Documents/Forms/AllItems.aspx         -> /sites/OFForms/Shared Documents
+    /// </summary>
+    private static string StripViewSuffix(string path)
+    {
+        // Strip .aspx files
+        if (path.EndsWith(".aspx", StringComparison.OrdinalIgnoreCase))
+        {
+            var lastSlash = path.LastIndexOf('/');
+            if (lastSlash > 0)
+                path = path[..lastSlash];
+        }
+
+        // Strip trailing /Forms segment (document library view folder)
+        if (path.EndsWith("/Forms", StringComparison.OrdinalIgnoreCase))
+            path = path[..^6];
+
+        return path.TrimEnd('/');
+    }
+
+    private static string GetSitePathFromUrl(string url)
+    {
+        try
+        {
+            var uri = new Uri(url);
+            var path = uri.AbsolutePath.TrimEnd('/');
+            var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
+            if (sitesIndex >= 0)
+            {
+                var afterSites = path[sitesIndex..];
+                var nextSlash = afterSites.IndexOf('/', 7);
+                var sitePath = nextSlash > 0 ? afterSites[..nextSlash] : afterSites;
+                return $"{uri.Host}:{sitePath}";
+            }
+            if (string.IsNullOrEmpty(path) || path == "/")
+                return $"{uri.Host}:/sites/root";
+            return $"{uri.Host}:{path}";
+        }
+        catch
+        {
+            return url;
+        }
     }
 
     /// <summary>Parse Modified from Graph (DateTimeOffset, string, JsonElement, Json, or ToString). Uses RoundtripKind for ISO 8601.</summary>
@@ -276,7 +417,6 @@ public class SharePointDigestService : ISharePointDigestService
                 return name;
         }
 
-        // Graph / locale-specific internal names: any field key that looks like "last editor" but skip *LookupId-only* numbers.
         foreach (var kv in fields)
         {
             if (kv.Value == null)
@@ -330,7 +470,6 @@ public class SharePointDigestService : ISharePointDigestService
             }
         }
 
-        // Kiota / OpenType values: serialize to JSON and pick person-like properties.
         try
         {
             var json = JsonSerializer.Serialize(o);
@@ -439,96 +578,6 @@ public class SharePointDigestService : ISharePointDigestService
         return false;
     }
 
-    private static string GetSitePathFromUrl(string url)
-    {
-        try
-        {
-            var uri = new Uri(url);
-            var path = uri.AbsolutePath.TrimEnd('/');
-            // /sites/SiteName or /sites/SiteName/...
-            var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
-            if (sitesIndex >= 0)
-            {
-                var afterSites = path.Substring(sitesIndex);
-                var nextSlash = afterSites.IndexOf('/', 7);
-                var sitePath = nextSlash > 0 ? afterSites.Substring(0, nextSlash) : afterSites;
-                return $"{uri.Host}:{sitePath}";
-            }
-            // Root site: Graph expects host + ":/" + server-relative path, e.g. host:/sites/root
-            if (string.IsNullOrEmpty(path) || path == "/")
-                return $"{uri.Host}:/sites/root";
-            return $"{uri.Host}:{path}";
-        }
-        catch
-        {
-            return url;
-        }
-    }
-
-    private static (string sitePath, string listName) ParseListOrLibraryUrl(string url)
-    {
-        try
-        {
-            var uri = new Uri(url);
-            var path = uri.AbsolutePath.TrimEnd('/');
-            var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
-
-            // Root site: e.g. /Shared Documents or /Lists/ListName
-            if (sitesIndex < 0)
-            {
-                if (string.IsNullOrEmpty(path) || path == "/")
-                    return ("", "");
-                var sitePath = $"{uri.Host}:/sites/root";
-                var listName = "";
-                var listsIndex = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
-                if (listsIndex >= 0)
-                {
-                    var listPart = path.Substring(listsIndex + 7);
-                    var end = listPart.IndexOf('/');
-                    listName = end > 0 ? Uri.UnescapeDataString(listPart.Substring(0, end)) : Uri.UnescapeDataString(listPart);
-                }
-                else
-                {
-                    var segments = path.TrimStart('/').Split('/');
-                    listName = segments.Length >= 1 ? Uri.UnescapeDataString(segments[0]) : "";
-                }
-                return (sitePath, listName);
-            }
-
-            // .../sites/SiteName/Lists/ListName/... or .../sites/SiteName/LibraryName/...
-            var afterSites = path.Substring(sitesIndex);
-
-            // Find the end of the site name segment (everything up to and including /sites/SiteName)
-            var siteNameEnd = afterSites.IndexOf('/', 7); // skip past "/sites/"
-            var siteRelativePath = siteNameEnd > 0 ? afterSites.Substring(0, siteNameEnd) : afterSites;
-            var sitePath2 = $"{uri.Host}:{siteRelativePath}";
-
-            // Now extract the list/library name from the segment immediately after the site name
-            var listName2 = "";
-            var listsIndex2 = afterSites.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
-            if (listsIndex2 >= 0)
-            {
-                var listPart = afterSites.Substring(listsIndex2 + 7);
-                var end = listPart.IndexOf('/');
-                listName2 = end > 0 ? Uri.UnescapeDataString(listPart.Substring(0, end)) : Uri.UnescapeDataString(listPart);
-            }
-            else if (siteNameEnd > 0)
-            {
-                // Library URL: segment right after site name is the library name
-                var remainder = afterSites.Substring(siteNameEnd + 1); // skip the slash
-                var nextSlash = remainder.IndexOf('/');
-                var librarySegment = nextSlash > 0 ? remainder.Substring(0, nextSlash) : remainder;
-                listName2 = Uri.UnescapeDataString(librarySegment);
-            }
-
-            return (sitePath2, listName2);
-        }
-        catch
-        {
-            return ("", "");
-        }
-    }
-
     private async Task<Site?> GetSiteByPathAsync(string hostAndPath, CancellationToken cancellationToken)
     {
         var isRoot = hostAndPath.EndsWith(":/sites/root", StringComparison.OrdinalIgnoreCase);
@@ -543,7 +592,6 @@ public class SharePointDigestService : ISharePointDigestService
         else
         {
             toTry.Add(hostAndPath);
-            // Browser URL may be https://tenant/itsp but Graph often expects /sites/itsp for team sites — try both.
             var sep = hostAndPath.IndexOf(":/", StringComparison.Ordinal);
             if (sep > 0)
             {
