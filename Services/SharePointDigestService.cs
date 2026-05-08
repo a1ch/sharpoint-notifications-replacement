@@ -106,26 +106,15 @@ public class SharePointDigestService : ISharePointDigestService
             listOrLibraryUrl, sitePath, subsitePath ?? "(none)", listName);
 
         // Build ordered list of site paths to try, most specific first.
-        // Graph can resolve classic subsites via their full server-relative path even though
-        // it won't enumerate them as child sites.
+        // Graph can resolve classic subsites via their full server-relative path.
         var sitePathsToTry = new List<string>();
 
         if (!string.IsNullOrEmpty(subsitePath))
         {
-            var host = sitePath[..sitePath.IndexOf(":/", StringComparison.Ordinal)];
-            var isRootSite = sitePath.EndsWith(":/sites/root", StringComparison.OrdinalIgnoreCase);
-
-            if (isRootSite)
-            {
-                // Root site subsites: host:/engp or host:/engp/engt
-                sitePathsToTry.Add($"{host}:/{subsitePath}");
-            }
-            else
-            {
-                // Named site subsites: host:/sites/OFForms/SupplierForms
-                var rel = sitePath[(sitePath.IndexOf(":/", StringComparison.Ordinal) + 1)..]; // e.g. /sites/OFForms
-                sitePathsToTry.Add($"{host}:{rel}/{subsitePath}");
-            }
+            // Try the full subsite path as a Graph site path e.g.:
+            //   Named site subsite:  host:/sites/OFForms/SupplierForms
+            //   Root site subsite:   host:/engp/engt
+            sitePathsToTry.Add($"{sitePath}/{subsitePath}");
         }
 
         sitePathsToTry.Add(sitePath); // always try the parent site last
@@ -195,7 +184,12 @@ public class SharePointDigestService : ISharePointDigestService
 
     /// <summary>
     /// Parses a SharePoint URL into (sitePath, subsitePath, listName).
-    /// Handles all common URL formats including subsites and view suffixes.
+    ///
+    /// sitePath uses Graph's host:path notation:
+    ///   Named site:  streamflogroup.sharepoint.com:/sites/OFForms
+    ///   Root site:   streamflogroup.sharepoint.com  (no colon/path — Graph uses hostname for root)
+    ///
+    /// subsitePath is everything between the site and the list, e.g. "SupplierForms" or "engp/engt"
     /// </summary>
     private static (string sitePath, string? subsitePath, string listName) ParseListOrLibraryUrl(string url)
     {
@@ -207,11 +201,14 @@ public class SharePointDigestService : ISharePointDigestService
 
             var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
 
-            // Root site collection (no /sites/ segment) e.g. /itsp/itst/LibraryName
+            // Root collection URLs — no /sites/ segment e.g. /engp/engt/Documents
             if (sitesIndex < 0)
             {
                 if (string.IsNullOrEmpty(path) || path == "/") return ("", null, "");
-                var rootSitePath = $"{uri.Host}:/sites/root";
+
+                // Root site in Graph is just the hostname
+                var rootSitePath = uri.Host;
+
                 var listsIdx = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
                 if (listsIdx >= 0)
                 {
@@ -221,12 +218,13 @@ public class SharePointDigestService : ISharePointDigestService
                     var beforeLists = path[..listsIdx].TrimStart('/');
                     return (rootSitePath, string.IsNullOrEmpty(beforeLists) ? null : beforeLists, listName);
                 }
+
                 var segments = path.TrimStart('/').Split('/');
                 if (segments.Length == 1) return (rootSitePath, null, Uri.UnescapeDataString(segments[0]));
                 return (rootSitePath, string.Join("/", segments[..^1]), Uri.UnescapeDataString(segments[^1]));
             }
 
-            // /sites/SiteName/...
+            // Named site — /sites/SiteName/...
             var afterSites = path[sitesIndex..];
             var siteNameEnd = afterSites.IndexOf('/', 7);
             var siteRelativePath = siteNameEnd > 0 ? afterSites[..siteNameEnd] : afterSites;
@@ -286,8 +284,8 @@ public class SharePointDigestService : ISharePointDigestService
                 var sitePath = nextSlash > 0 ? afterSites[..nextSlash] : afterSites;
                 return $"{uri.Host}:{sitePath}";
             }
-            if (string.IsNullOrEmpty(path) || path == "/") return $"{uri.Host}:/sites/root";
-            return $"{uri.Host}:{path}";
+            // Root site collection — just the hostname
+            return uri.Host;
         }
         catch { return url; }
     }
@@ -490,28 +488,12 @@ public class SharePointDigestService : ISharePointDigestService
 
     private async Task<Site?> GetSiteByPathAsync(string hostAndPath, CancellationToken cancellationToken)
     {
-        var isRoot = hostAndPath.EndsWith(":/sites/root", StringComparison.OrdinalIgnoreCase);
-        var toTry = new List<string>();
+        // Pure hostname = root site collection (e.g. "streamflogroup.sharepoint.com")
+        // host:path = named site or subsite (e.g. "streamflogroup.sharepoint.com:/sites/OFForms/SupplierForms")
+        var siteId = hostAndPath.Contains(":/", StringComparison.Ordinal) ? hostAndPath : hostAndPath;
 
-        if (isRoot)
-        {
-            toTry.Add("root");
-            var hostname = hostAndPath[..hostAndPath.IndexOf(":/", StringComparison.Ordinal)];
-            if (!string.IsNullOrEmpty(hostname)) toTry.Add(hostname);
-        }
-        else
-        {
-            toTry.Add(hostAndPath);
-        }
-
-        foreach (var siteId in toTry.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrEmpty(siteId)) continue;
-            try { return await _graph!.Sites[siteId].GetAsync(r => { }, cancellationToken).ConfigureAwait(false); }
-            catch { }
-        }
-
-        return null;
+        try { return await _graph!.Sites[siteId].GetAsync(r => { }, cancellationToken).ConfigureAwait(false); }
+        catch { return null; }
     }
 
     /// <summary>Gets all lists for a site, paging through results to handle large sites.</summary>
