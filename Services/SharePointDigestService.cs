@@ -13,7 +13,7 @@ using GraphList = Microsoft.Graph.Models.List;
 public class SharePointDigestService : ISharePointDigestService
 {
     private GraphServiceClient? _graph;
-    private string? _configListUrl;
+    private string? _configSiteUrl;
     private string? _configListName;
     private readonly object _initLock = new();
     private readonly ILogger<SharePointDigestService>? _logger;
@@ -40,12 +40,11 @@ public class SharePointDigestService : ISharePointDigestService
                 throw new InvalidOperationException("Add these Application settings in the Function App: " + string.Join(", ", missing));
             var configSiteUrl = Environment.GetEnvironmentVariable("CONFIG_SITE_URL") ?? "";
             if (string.IsNullOrEmpty(configSiteUrl))
-                throw new InvalidOperationException("Add Application setting CONFIG_SITE_URL (e.g. https://tenant.sharepoint.com/itsp/Lists/Digest%20Subscriptions).");
+                throw new InvalidOperationException("Add Application setting CONFIG_SITE_URL (e.g. https://tenant.sharepoint.com/itsp).");
             var credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
             _graph = new GraphServiceClient(credential);
             _configListName = Environment.GetEnvironmentVariable("CONFIG_LIST_NAME") ?? "Digest Subscriptions";
-            // CONFIG_SITE_URL can be the full list URL or just the site URL
-            _configListUrl = configSiteUrl;
+            _configSiteUrl = configSiteUrl;
         }
     }
 
@@ -53,17 +52,8 @@ public class SharePointDigestService : ISharePointDigestService
     {
         EnsureInitialized();
 
-        // Use the same subsite-aware resolution as GetRecentChangesAsync
-        var (sitePath, subsitePath, parsedListName) = ParseListOrLibraryUrl(_configListUrl!);
-
-        // If the URL contained a list name (e.g. .../Lists/Digest%20Subscriptions), use it;
-        // otherwise fall back to CONFIG_LIST_NAME env var
-        var listName = !string.IsNullOrEmpty(parsedListName) ? parsedListName : _configListName!;
-
-        var sitePathsToTry = new List<string>();
-        if (!string.IsNullOrEmpty(subsitePath))
-            sitePathsToTry.Add($"{sitePath}/{subsitePath}");
-        sitePathsToTry.Add(sitePath);
+        // Parse CONFIG_SITE_URL to get site + subsite only — list name always comes from CONFIG_LIST_NAME
+        var sitePathsToTry = BuildSitePathCandidates(_configSiteUrl!);
 
         string? resolvedSiteId = null;
         GraphList? list = null;
@@ -73,18 +63,18 @@ public class SharePointDigestService : ISharePointDigestService
             if (string.IsNullOrEmpty(sp)) continue;
             var candidate = await GetSiteByPathAsync(sp, cancellationToken).ConfigureAwait(false);
             if (candidate?.Id == null) continue;
-            var candidateList = await GetListByNameAsync(candidate.Id, listName, cancellationToken).ConfigureAwait(false);
+            var candidateList = await GetListByNameAsync(candidate.Id, _configListName!, cancellationToken).ConfigureAwait(false);
             if (candidateList?.Id == null) continue;
             resolvedSiteId = candidate.Id;
             list = candidateList;
-            _logger?.LogInformation("Config list '{ListName}' resolved on site '{SitePath}'", listName, sp);
+            _logger?.LogInformation("Config list '{ListName}' resolved on site '{SitePath}'", _configListName, sp);
             break;
         }
 
         if (list?.Id == null || resolvedSiteId == null)
         {
             _logger?.LogWarning("Config list '{ListName}' not found. CONFIG_SITE_URL={Url}. Tried: {Tried}",
-                listName, _configListUrl, string.Join(", ", sitePathsToTry));
+                _configListName, _configSiteUrl, string.Join(", ", sitePathsToTry));
             return Array.Empty<ConfigListItem>();
         }
 
@@ -193,8 +183,49 @@ public class SharePointDigestService : ISharePointDigestService
     }
 
     /// <summary>
-    /// Parses a SharePoint URL into (sitePath, subsitePath, listName).
-    /// sitePath: host:/sites/SiteName for named sites, or just hostname for root collection.
+    /// Given a site URL (not a list URL), returns ordered Graph site path candidates to try.
+    /// e.g. https://streamflogroup.sharepoint.com/itsp ->
+    ///   ["streamflogroup.sharepoint.com/itsp", "streamflogroup.sharepoint.com"]
+    /// e.g. https://streamflogroup.sharepoint.com/sites/OFForms/SupplierForms ->
+    ///   ["streamflogroup.sharepoint.com:/sites/OFForms/SupplierForms", "streamflogroup.sharepoint.com:/sites/OFForms"]
+    /// </summary>
+    private static List<string> BuildSitePathCandidates(string siteUrl)
+    {
+        try
+        {
+            var uri = new Uri(siteUrl);
+            var path = uri.AbsolutePath.TrimEnd('/');
+            var candidates = new List<string>();
+
+            var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
+
+            if (sitesIndex < 0)
+            {
+                // Root collection subsite e.g. /itsp or /itsp/itst
+                // Try most specific path first, then progressively shorter
+                var segments = path.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+                for (var i = segments.Length; i >= 1; i--)
+                    candidates.Add($"{uri.Host}/{string.Join("/", segments[..i])}");
+                candidates.Add(uri.Host); // root fallback
+            }
+            else
+            {
+                // Named site e.g. /sites/OFForms or /sites/OFForms/SupplierForms
+                var afterSites = path[sitesIndex..];
+                var parts = afterSites.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+                // parts[0] = "sites", parts[1] = SiteName, parts[2+] = subsite segments
+                for (var i = parts.Length; i >= 2; i--)
+                    candidates.Add($"{uri.Host}:/{string.Join("/", parts[..i])}");
+            }
+
+            return candidates;
+        }
+        catch { return new List<string>(); }
+    }
+
+    /// <summary>
+    /// Parses a SharePoint list/library URL into (sitePath, subsitePath, listName).
+    /// sitePath: host:/sites/SiteName for named sites, or hostname for root collection.
     /// subsitePath: segments between the site and the list/library.
     /// </summary>
     private static (string sitePath, string? subsitePath, string listName) ParseListOrLibraryUrl(string url)
@@ -207,13 +238,11 @@ public class SharePointDigestService : ISharePointDigestService
 
             var sitesIndex = path.IndexOf("/sites/", StringComparison.OrdinalIgnoreCase);
 
-            // Root collection URLs — no /sites/ segment e.g. /engp/engt/Documents or /itsp/Lists/Digest Subscriptions
+            // Root collection URLs — no /sites/ segment
             if (sitesIndex < 0)
             {
                 if (string.IsNullOrEmpty(path) || path == "/") return ("", null, "");
-
                 var rootSitePath = uri.Host;
-
                 var listsIdx = path.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
                 if (listsIdx >= 0)
                 {
@@ -223,13 +252,12 @@ public class SharePointDigestService : ISharePointDigestService
                     var beforeLists = path[..listsIdx].TrimStart('/');
                     return (rootSitePath, string.IsNullOrEmpty(beforeLists) ? null : beforeLists, listName);
                 }
-
                 var segments = path.TrimStart('/').Split('/');
                 if (segments.Length == 1) return (rootSitePath, null, Uri.UnescapeDataString(segments[0]));
                 return (rootSitePath, string.Join("/", segments[..^1]), Uri.UnescapeDataString(segments[^1]));
             }
 
-            // Named site — /sites/SiteName/...
+            // Named site
             var afterSites = path[sitesIndex..];
             var siteNameEnd = afterSites.IndexOf('/', 7);
             var siteRelativePath = siteNameEnd > 0 ? afterSites[..siteNameEnd] : afterSites;
@@ -237,7 +265,6 @@ public class SharePointDigestService : ISharePointDigestService
             if (siteNameEnd < 0) return (sitePath2, null, "");
 
             var afterSiteName = afterSites[siteNameEnd..];
-
             var listsIndex2 = afterSiteName.IndexOf("/Lists/", StringComparison.OrdinalIgnoreCase);
             if (listsIndex2 >= 0)
             {
