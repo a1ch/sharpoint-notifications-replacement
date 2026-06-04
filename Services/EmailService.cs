@@ -102,7 +102,7 @@ public class EmailService : IEmailService
         var latestChangedAt = latestChange != null ? FormatModifiedDate(latestChange.Modified) : "Unknown date";
 
         // Email-safe: inline styles, no external CSS
-        sb.Append("<html><body style=\"margin:0; padding:0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 15px; line-height: 1.5; color: #1e293b; background: #f1f5f9;\">");
+        sb.Append("<html><body style=\"margin:0; padding:0; font-family: Arial, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; color: #1e293b; background: #f1f5f9;\">");
         sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background: #f1f5f9; padding: 24px 16px;\"><tr><td align=\"center\">");
         sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width: 560px; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.06); overflow: hidden;\"><tr><td>");
 
@@ -114,6 +114,9 @@ public class EmailService : IEmailService
         if (brandInfo?.Tagline != null)
             sb.Append("<div style=\"font-size: 13px; opacity: 0.9; margin-top: 4px;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.Tagline)).Append("</div>");
         sb.Append("</div>");
+
+        // Subtitle bar (matches Stream-Flo task template)
+        sb.Append("<div style=\"background: ").Append(Darken(accent)).Append("; padding: 8px 28px;\"><span style=\"color:#ffffff; font-size:12px; opacity:0.92;\">SharePoint Daily Digest</span></div>");
 
         // Body
         sb.Append("<div style=\"padding: 28px;\">");
@@ -145,11 +148,27 @@ public class EmailService : IEmailService
 
         // Footer
         sb.Append("<div style=\"padding: 16px 28px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8;\">");
-        sb.Append(System.Net.WebUtility.HtmlEncode(brandInfo?.DisplayName ?? "SharePoint")).Append(" · Daily Digest");
+        sb.Append("<p style=\"margin:0; font-size:11px; color:#94a3b8;\">This is an automated message from the Stream-Flo Group SharePoint notification system. Do not reply to this email.</p>");
+        sb.Append("<p style=\"margin:4px 0 0; font-size:11px; color:#94a3b8;\">Stream-Flo USA LLC &middot; Master Flo Valve USA Inc. &middot; Dycor</p>");
         sb.Append("</div>");
 
         sb.Append("</td></tr></table></td></tr></table></body></html>");
         return sb.ToString();
+    }
+
+    /// <summary>Darken a hex color (for the subtitle bar under the brand header).</summary>
+    private static string Darken(string hex, double factor = 0.7)
+    {
+        try
+        {
+            hex = hex.TrimStart('#');
+            if (hex.Length != 6) return "#002a57";
+            int r = (int)(Convert.ToInt32(hex.Substring(0, 2), 16) * factor);
+            int g = (int)(Convert.ToInt32(hex.Substring(2, 2), 16) * factor);
+            int bl = (int)(Convert.ToInt32(hex.Substring(4, 2), 16) * factor);
+            return $"#{r:X2}{g:X2}{bl:X2}";
+        }
+        catch { return "#002a57"; }
     }
 
     /// <summary>Format modified date for email; shows "Unknown date" if unparsed (default).</summary>
