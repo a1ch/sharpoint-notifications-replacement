@@ -121,8 +121,9 @@ public class EmailService : IEmailService
         // Body
         sb.Append("<div style=\"padding: 28px;\">");
         if (hasSiteName)
-            sb.Append("<p style=\"margin: 0 0 6px; font-size: 13px; color: #64748b;\">").Append(System.Net.WebUtility.HtmlEncode(siteName!)).Append("</p>");
-        sb.Append("<p style=\"margin: 0 0 12px; font-size: 15px; color: #475569;\">New or changed in the last 24 hours in <strong style=\"color: #1e293b;\">").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</strong></p>");
+            sb.Append("<p style=\"margin: 0 0 4px; font-size: 13px; color: #64748b;\">").Append(System.Net.WebUtility.HtmlEncode(siteName!)).Append("</p>");
+        sb.Append("<p style=\"margin: 0 0 6px; font-size: 18px; font-weight: 700; color: ").Append(accent).Append(";\">").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</p>");
+        sb.Append("<p style=\"margin: 0 0 14px; font-size: 14px; color: #475569;\">New or changed in the last 24 hours</p>");
         sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin: 0 0 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;\"><tr><td style=\"padding: 12px 14px; font-size: 13px; color: #475569;\">");
         sb.Append("<strong style=\"color:#334155;\">Items changed:</strong> ").Append(changes.Count).Append("<br/>");
         sb.Append("<strong style=\"color:#334155;\">Latest update:</strong> ").Append(System.Net.WebUtility.HtmlEncode(latestChangedAt)).Append("<br/>");
