@@ -7,26 +7,19 @@ using SharepointDailyDigest.Models;
 
 namespace SharepointDailyDigest.Services;
 
-/// <summary>Brand styling for digest emails (Streamflo, Masterflo, Dycor).</summary>
-internal record BrandInfo(string DisplayName, string AccentColorHex, string? Tagline = null, string? LegalName = null);
-
 public class EmailService : IEmailService
 {
-    private static readonly Dictionary<string, BrandInfo> Brands = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Streamflo"]  = new BrandInfo("Stream-Flo", "#003366", null, "Stream-Flo USA LLC"),
-        ["Stream-Flo"] = new BrandInfo("Stream-Flo", "#003366", null, "Stream-Flo USA LLC"),
-        ["Masterflo"]  = new BrandInfo("Master Flo", "#0066b3", "A Lifetime of Uptime", "Master Flo Valve USA Inc."),
-        ["Master Flo"] = new BrandInfo("Master Flo", "#0066b3", "A Lifetime of Uptime", "Master Flo Valve USA Inc."),
-        ["Dycor"]      = new BrandInfo("Dycor", "#0d7a7a", "Data Acquisition, Controls, Innovation and Technology", "Dycor Technologies"),
-    };
+    // Unified Stream-Flo Group identity. The per-row Brand value is intentionally ignored:
+    // every digest uses one template that represents all three companies together.
+    private const string GroupName = "Stream-Flo Group";
+    private const string GroupAccent = "#003366";   // navy — used for links, button, borders, chips
 
-    // Legal entities shown in the footer, in order. The active brand is emphasized.
-    private static readonly (string Key, string Legal)[] FooterEntities =
+    /// <summary>The three group companies (display name, accent color, legal name) shown in the header and footer.</summary>
+    private static readonly (string Name, string Color, string Legal)[] GroupBrands =
     {
-        ("Stream-Flo", "Stream-Flo USA LLC"),
-        ("Master Flo", "Master Flo Valve USA Inc."),
-        ("Dycor", "Dycor"),
+        ("Stream-Flo", "#003366", "Stream-Flo USA LLC"),
+        ("Master Flo", "#0066b3", "Master Flo Valve USA Inc."),
+        ("Dycor",      "#0d7a7a", "Dycor Technologies"),
     };
 
     private GraphServiceClient? _graph;
@@ -67,11 +60,12 @@ public class EmailService : IEmailService
             return;
         EnsureInitialized();
 
+        // brand is intentionally unused: the unified Stream-Flo Group template is always used.
         var hasSiteName = !string.IsNullOrWhiteSpace(siteName);
         var subject = hasSiteName
             ? $"SharePoint digest: {siteName} – {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours"
             : $"SharePoint digest: {listOrLibraryName} – {changes.Count} new or updated item(s) in the last 24 hours";
-        var body = BuildDigestHtml(listOrLibraryName, changes, brand, siteName, listOrLibraryUrl);
+        var body = BuildDigestHtml(listOrLibraryName, changes, siteName, listOrLibraryUrl);
 
         var requestBody = new SendMailPostRequestBody
         {
@@ -97,15 +91,13 @@ public class EmailService : IEmailService
         await _graph!.Users[_sendFromUserId!].SendMail.PostAsync(requestBody, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, string? listOrLibraryUrl = null)
+    private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? siteName = null, string? listOrLibraryUrl = null)
     {
         static string Enc(string? s) => System.Net.WebUtility.HtmlEncode(s ?? "");
 
-        var brandInfo = !string.IsNullOrWhiteSpace(brand) && Brands.TryGetValue(brand.Trim(), out var b) ? b : null;
-        var accent = brandInfo?.AccentColorHex ?? "#2563eb";
+        var accent = GroupAccent;
         var accentDark = Darken(accent, 0.72);
-        var accentSoft = Tint(accent, 0.90);   // very light brand tint for chips/panels
-        var wordmark = brandInfo?.DisplayName ?? "SharePoint Digest";
+        var accentSoft = Tint(accent, 0.90);   // very light navy tint for the count chip
 
         var hasSiteName = !string.IsNullOrWhiteSpace(siteName);
         var hasLibraryUrl = !string.IsNullOrWhiteSpace(listOrLibraryUrl);
@@ -116,6 +108,7 @@ public class EmailService : IEmailService
         var latestChangedBy = !string.IsNullOrWhiteSpace(latestChange?.ModifiedBy) ? latestChange!.ModifiedBy : "Unknown user";
         var latestChangedAt = latestChange != null ? FormatModifiedDate(latestChange.Modified) : "Unknown date";
         var itemWord = changes.Count == 1 ? "item" : "items";
+        var companyNames = string.Join("  ·  ", GroupBrands.Select(g => g.Name));
 
         var sb = new StringBuilder(8192);
 
@@ -133,13 +126,18 @@ public class EmailService : IEmailService
         sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#eef2f7; padding:32px 16px;\"><tr><td align=\"center\">");
         sb.Append("<table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:600px; max-width:600px; background:#ffffff; border-radius:14px; border:1px solid #e3e8ef; box-shadow:0 8px 24px rgba(15,23,42,0.08); overflow:hidden;\">");
 
-        // ---- Brand header ----
+        // ---- Tri-color ribbon (one segment per company) ----
+        sb.Append("<tr><td style=\"padding:0;\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>");
+        foreach (var g in GroupBrands)
+            sb.Append("<td style=\"height:6px; line-height:6px; font-size:0; background:").Append(g.Color).Append(";\">&nbsp;</td>");
+        sb.Append("</tr></table></td></tr>");
+
+        // ---- Group header ----
         sb.Append("<tr><td style=\"background-color:").Append(accent)
-          .Append("; background-image:linear-gradient(135deg,").Append(accent).Append(" 0%,").Append(accentDark).Append(" 100%); padding:34px 36px 28px;\">");
-        sb.Append("<div style=\"font-size:27px; font-weight:800; letter-spacing:0.4px; color:#ffffff; line-height:1.1;\">").Append(Enc(wordmark)).Append("</div>");
+          .Append("; background-image:linear-gradient(135deg,").Append(accent).Append(" 0%,").Append(accentDark).Append(" 100%); padding:32px 36px 26px;\">");
+        sb.Append("<div style=\"font-size:27px; font-weight:800; letter-spacing:0.4px; color:#ffffff; line-height:1.1;\">").Append(Enc(GroupName)).Append("</div>");
         sb.Append("<div style=\"width:46px; height:3px; background:rgba(255,255,255,0.55); border-radius:2px; margin:14px 0 0;\"></div>");
-        if (!string.IsNullOrWhiteSpace(brandInfo?.Tagline))
-            sb.Append("<div style=\"font-size:13px; color:rgba(255,255,255,0.88); margin-top:12px; letter-spacing:0.2px;\">").Append(Enc(brandInfo!.Tagline)).Append("</div>");
+        sb.Append("<div style=\"font-size:13px; font-weight:600; color:rgba(255,255,255,0.9); margin-top:12px; letter-spacing:0.6px;\">").Append(Enc(companyNames)).Append("</div>");
         sb.Append("</td></tr>");
 
         // ---- Sub-bar ----
@@ -201,19 +199,16 @@ public class EmailService : IEmailService
         }
         sb.Append("</td></tr>");
 
-        // ---- Footer ----
+        // ---- Footer: all three companies, each with its color dot ----
         sb.Append("<tr><td style=\"padding:22px 36px 26px; background:#fafbfc; border-top:1px solid #eceff4;\">");
         sb.Append("<div style=\"font-size:11px; color:#94a3b8; line-height:1.6;\">This is an automated message from the Stream-Flo Group SharePoint notification system. Please do not reply to this email.</div>");
-        sb.Append("<div style=\"font-size:11px; color:#cbd5e1; margin-top:10px;\">");
-        for (var i = 0; i < FooterEntities.Length; i++)
+        sb.Append("<div style=\"font-size:11px; color:#94a3b8; margin-top:12px;\">");
+        for (var i = 0; i < GroupBrands.Length; i++)
         {
-            var (key, legal) = FooterEntities[i];
-            var isActive = brandInfo != null && string.Equals(brandInfo.DisplayName, key, StringComparison.OrdinalIgnoreCase);
-            if (i > 0) sb.Append(" &nbsp;&middot;&nbsp; ");
-            if (isActive)
-                sb.Append("<span style=\"color:").Append(accent).Append("; font-weight:700;\">").Append(Enc(legal)).Append("</span>");
-            else
-                sb.Append("<span style=\"color:#94a3b8;\">").Append(Enc(legal)).Append("</span>");
+            var g = GroupBrands[i];
+            if (i > 0) sb.Append(" &nbsp;&nbsp; ");
+            sb.Append("<span style=\"display:inline-block; width:8px; height:8px; border-radius:2px; background:").Append(g.Color).Append("; margin-right:6px;\"></span>");
+            sb.Append("<span style=\"color:#64748b;\">").Append(Enc(g.Legal)).Append("</span>");
         }
         sb.Append("</div>");
         sb.Append("</td></tr>");
@@ -229,7 +224,7 @@ public class EmailService : IEmailService
         sb.Append("<td style=\"padding:").Append(pad).Append("; color:#1e293b; vertical-align:top;\">").Append(encodedValue).Append("</td></tr>");
     }
 
-    /// <summary>Darken a hex color (for the gradient base and sub-bar under the brand header).</summary>
+    /// <summary>Darken a hex color (for the gradient base and sub-bar under the group header).</summary>
     private static string Darken(string hex, double factor = 0.7)
     {
         try
