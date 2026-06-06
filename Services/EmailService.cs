@@ -8,18 +8,27 @@ using SharepointDailyDigest.Models;
 namespace SharepointDailyDigest.Services;
 
 /// <summary>Brand styling for digest emails (Streamflo, Masterflo, Dycor).</summary>
-internal record BrandInfo(string DisplayName, string AccentColorHex, string? LogoUrl = null, string? Tagline = null);
+internal record BrandInfo(string DisplayName, string AccentColorHex, string? Tagline = null, string? LegalName = null);
 
 public class EmailService : IEmailService
 {
     private static readonly Dictionary<string, BrandInfo> Brands = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["Streamflo"] = new BrandInfo("Stream-Flo", "#003366", "https://streamflo.com/wp-content/themes/streamflo/images/logo.jpg", null),
-        ["Stream-Flo"] = new BrandInfo("Stream-Flo", "#003366", "https://streamflo.com/wp-content/themes/streamflo/images/logo.jpg", null),
-        ["Masterflo"] = new BrandInfo("Master Flo", "#0066b3", "https://masterflo.com/wp-content/themes/masterflo/images/logo.png", "A Lifetime of Uptime"),
-        ["Master Flo"] = new BrandInfo("Master Flo", "#0066b3", "https://masterflo.com/wp-content/themes/masterflo/images/logo.png", "A Lifetime of Uptime"),
-        ["Dycor"] = new BrandInfo("Dycor", "#0d7a7a", "https://dycor.com/wp-content/uploads/2020/01/dycor-logo-dark-220.png", "Data Acquisition, Controls, Innovation and Technology"),
+        ["Streamflo"]  = new BrandInfo("Stream-Flo", "#003366", null, "Stream-Flo USA LLC"),
+        ["Stream-Flo"] = new BrandInfo("Stream-Flo", "#003366", null, "Stream-Flo USA LLC"),
+        ["Masterflo"]  = new BrandInfo("Master Flo", "#0066b3", "A Lifetime of Uptime", "Master Flo Valve USA Inc."),
+        ["Master Flo"] = new BrandInfo("Master Flo", "#0066b3", "A Lifetime of Uptime", "Master Flo Valve USA Inc."),
+        ["Dycor"]      = new BrandInfo("Dycor", "#0d7a7a", "Data Acquisition, Controls, Innovation and Technology", "Dycor Technologies"),
     };
+
+    // Legal entities shown in the footer, in order. The active brand is emphasized.
+    private static readonly (string Key, string Legal)[] FooterEntities =
+    {
+        ("Stream-Flo", "Stream-Flo USA LLC"),
+        ("Master Flo", "Master Flo Valve USA Inc."),
+        ("Dycor", "Dycor"),
+    };
+
     private GraphServiceClient? _graph;
     private string? _sendFromUserId;
     private readonly object _initLock = new();
@@ -90,74 +99,137 @@ public class EmailService : IEmailService
 
     private static string BuildDigestHtml(string listOrLibraryName, IReadOnlyList<ChangedItem> changes, string? brand = null, string? siteName = null, string? listOrLibraryUrl = null)
     {
-        var sb = new StringBuilder();
+        static string Enc(string? s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+
         var brandInfo = !string.IsNullOrWhiteSpace(brand) && Brands.TryGetValue(brand.Trim(), out var b) ? b : null;
         var accent = brandInfo?.AccentColorHex ?? "#2563eb";
+        var accentDark = Darken(accent, 0.72);
+        var accentSoft = Tint(accent, 0.90);   // very light brand tint for chips/panels
+        var wordmark = brandInfo?.DisplayName ?? "SharePoint Digest";
+
         var hasSiteName = !string.IsNullOrWhiteSpace(siteName);
         var hasLibraryUrl = !string.IsNullOrWhiteSpace(listOrLibraryUrl);
+
         var latestChange = changes
             .OrderByDescending(c => c.Modified == default ? DateTimeOffset.MinValue : c.Modified)
             .FirstOrDefault();
-        var latestChangedBy = !string.IsNullOrWhiteSpace(latestChange?.ModifiedBy) ? latestChange.ModifiedBy : "Unknown user";
+        var latestChangedBy = !string.IsNullOrWhiteSpace(latestChange?.ModifiedBy) ? latestChange!.ModifiedBy : "Unknown user";
         var latestChangedAt = latestChange != null ? FormatModifiedDate(latestChange.Modified) : "Unknown date";
+        var itemWord = changes.Count == 1 ? "item" : "items";
 
-        // Email-safe: inline styles, no external CSS
-        sb.Append("<html><body style=\"margin:0; padding:0; font-family: Arial, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; color: #1e293b; background: #f1f5f9;\">");
-        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background: #f1f5f9; padding: 24px 16px;\"><tr><td align=\"center\">");
-        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width: 560px; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.06); overflow: hidden;\"><tr><td>");
+        var sb = new StringBuilder(8192);
 
-        // Header
-        sb.Append("<div style=\"background: ").Append(accent).Append("; color: #ffffff; padding: 24px 28px;\">");
-        if (brandInfo != null && !string.IsNullOrEmpty(brandInfo.LogoUrl))
-            sb.Append("<img src=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.LogoUrl)).Append("\" alt=\"").Append(System.Net.WebUtility.HtmlEncode(brandInfo.DisplayName)).Append("\" style=\"max-height: 40px; max-width: 180px; display: block; margin-bottom: 12px;\" />");
-        sb.Append("<div style=\"font-size: 22px; font-weight: 700; letter-spacing: -0.02em;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo?.DisplayName ?? "SharePoint Digest")).Append("</div>");
-        if (brandInfo?.Tagline != null)
-            sb.Append("<div style=\"font-size: 13px; opacity: 0.9; margin-top: 4px;\">").Append(System.Net.WebUtility.HtmlEncode(brandInfo.Tagline)).Append("</div>");
-        sb.Append("</div>");
+        sb.Append("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"/>");
+        sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>");
+        sb.Append("<meta name=\"color-scheme\" content=\"light only\"/>");
+        sb.Append("<title>SharePoint Daily Digest</title></head>");
+        sb.Append("<body style=\"margin:0; padding:0; width:100%; background:#eef2f7; font-family:'Segoe UI',Arial,sans-serif; font-size:15px; line-height:1.5; color:#1e293b; -webkit-font-smoothing:antialiased;\">");
 
-        // Subtitle bar (matches Stream-Flo task template)
-        sb.Append("<div style=\"background: ").Append(Darken(accent)).Append("; padding: 8px 28px;\"><span style=\"color:#ffffff; font-size:12px; opacity:0.92;\">SharePoint Daily Digest</span></div>");
+        // Hidden preheader (inbox preview text)
+        sb.Append("<div style=\"display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;\">")
+          .Append(changes.Count).Append(' ').Append("new or updated ").Append(itemWord).Append(" in ").Append(Enc(listOrLibraryName))
+          .Append(" &mdash; last 24 hours</div>");
 
-        // Body
-        sb.Append("<div style=\"padding: 28px;\">");
+        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#eef2f7; padding:32px 16px;\"><tr><td align=\"center\">");
+        sb.Append("<table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:600px; max-width:600px; background:#ffffff; border-radius:14px; border:1px solid #e3e8ef; box-shadow:0 8px 24px rgba(15,23,42,0.08); overflow:hidden;\">");
+
+        // ---- Brand header ----
+        sb.Append("<tr><td style=\"background-color:").Append(accent)
+          .Append("; background-image:linear-gradient(135deg,").Append(accent).Append(" 0%,").Append(accentDark).Append(" 100%); padding:34px 36px 28px;\">");
+        sb.Append("<div style=\"font-size:27px; font-weight:800; letter-spacing:0.4px; color:#ffffff; line-height:1.1;\">").Append(Enc(wordmark)).Append("</div>");
+        sb.Append("<div style=\"width:46px; height:3px; background:rgba(255,255,255,0.55); border-radius:2px; margin:14px 0 0;\"></div>");
+        if (!string.IsNullOrWhiteSpace(brandInfo?.Tagline))
+            sb.Append("<div style=\"font-size:13px; color:rgba(255,255,255,0.88); margin-top:12px; letter-spacing:0.2px;\">").Append(Enc(brandInfo!.Tagline)).Append("</div>");
+        sb.Append("</td></tr>");
+
+        // ---- Sub-bar ----
+        sb.Append("<tr><td style=\"background:").Append(accentDark).Append("; padding:9px 36px;\">");
+        sb.Append("<span style=\"color:rgba(255,255,255,0.92); font-size:11px; font-weight:600; letter-spacing:1.6px; text-transform:uppercase;\">SharePoint Daily Digest</span>");
+        sb.Append("</td></tr>");
+
+        // ---- Body ----
+        sb.Append("<tr><td style=\"padding:30px 36px 8px;\">");
+
         if (hasSiteName)
-            sb.Append("<p style=\"margin: 0 0 4px; font-size: 13px; color: #64748b;\">").Append(System.Net.WebUtility.HtmlEncode(siteName!)).Append("</p>");
-        sb.Append("<p style=\"margin: 0 0 6px; font-size: 18px; font-weight: 700; color: ").Append(accent).Append(";\">").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append("</p>");
-        sb.Append("<p style=\"margin: 0 0 14px; font-size: 14px; color: #475569;\">New or changed in the last 24 hours</p>");
-        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin: 0 0 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;\"><tr><td style=\"padding: 12px 14px; font-size: 13px; color: #475569;\">");
-        sb.Append("<strong style=\"color:#334155;\">Items changed:</strong> ").Append(changes.Count).Append("<br/>");
-        sb.Append("<strong style=\"color:#334155;\">Latest update:</strong> ").Append(System.Net.WebUtility.HtmlEncode(latestChangedAt)).Append("<br/>");
-        sb.Append("<strong style=\"color:#334155;\">Latest changed by:</strong> ").Append(System.Net.WebUtility.HtmlEncode(latestChangedBy!));
-        sb.Append("</td></tr></table>");
-        if (hasLibraryUrl)
-            sb.Append("<p style=\"margin: 0 0 20px; font-size: 14px;\"><a href=\"").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryUrl)).Append("\" style=\"color: ").Append(accent).Append("; font-weight: 600; text-decoration: none;\">Open ").Append(System.Net.WebUtility.HtmlEncode(listOrLibraryName)).Append(" →</a></p>");
-        else
-            sb.Append("<p style=\"margin: 0 0 20px;\"></p>");
+            sb.Append("<div style=\"font-size:11px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#94a3b8; margin:0 0 6px;\">").Append(Enc(siteName)).Append("</div>");
 
-        foreach (var c in changes)
+        sb.Append("<div style=\"font-size:21px; font-weight:700; color:#0f172a; margin:0 0 12px; line-height:1.25;\">").Append(Enc(listOrLibraryName)).Append("</div>");
+
+        // Count pill
+        sb.Append("<span style=\"display:inline-block; background:").Append(accentSoft).Append("; color:").Append(accent)
+          .Append("; font-size:12px; font-weight:700; letter-spacing:0.3px; padding:6px 14px; border-radius:999px;\">")
+          .Append(changes.Count).Append(' ').Append(itemWord).Append(" updated &middot; last 24 hours</span>");
+
+        // Summary card
+        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:18px 0 0; background:#f8fafc; border:1px solid #e6ebf2; border-radius:10px;\"><tr><td style=\"padding:16px 18px;\">");
+        sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:13px;\">");
+        AppendSummaryRow(sb, "Items changed", changes.Count.ToString(CultureInfo.InvariantCulture), false);
+        AppendSummaryRow(sb, "Latest update", Enc(latestChangedAt), false);
+        AppendSummaryRow(sb, "Latest changed by", Enc(latestChangedBy), true);
+        sb.Append("</table>");
+        sb.Append("</td></tr></table>");
+
+        // Open button
+        if (hasLibraryUrl)
         {
-            sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-bottom: 12px; background: #f8fafc; border-radius: 8px; border-left: 4px solid ").Append(accent).Append(";\"><tr><td style=\"padding: 14px 16px;\">");
-            sb.Append("<a href=\"").Append(System.Net.WebUtility.HtmlEncode(c.WebUrl)).Append("\" style=\"font-weight: 600; color: ").Append(accent).Append("; text-decoration: none; font-size: 15px;\">").Append(System.Net.WebUtility.HtmlEncode(c.Title)).Append("</a>");
-            sb.Append("<div style=\"font-size: 13px; color: #64748b; margin-top: 4px;\">");
-            sb.Append("<strong>Updated:</strong> ").Append(FormatModifiedDate(c.Modified));
-            sb.Append(" · <strong>By:</strong> ").Append(System.Net.WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(c.ModifiedBy) ? "Unknown user" : c.ModifiedBy));
-            sb.Append("</div>");
+            sb.Append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:20px 0 4px;\"><tr><td style=\"background:").Append(accent).Append("; border-radius:8px;\">");
+            sb.Append("<a href=\"").Append(Enc(listOrLibraryUrl)).Append("\" style=\"display:inline-block; padding:12px 24px; font-size:14px; font-weight:700; color:#ffffff; text-decoration:none; letter-spacing:0.2px;\">Open ").Append(Enc(listOrLibraryName)).Append(" &rarr;</a>");
             sb.Append("</td></tr></table>");
         }
 
-        sb.Append("</div>");
+        sb.Append("</td></tr>");
 
-        // Footer
-        sb.Append("<div style=\"padding: 16px 28px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8;\">");
-        sb.Append("<p style=\"margin:0; font-size:11px; color:#94a3b8;\">This is an automated message from the Stream-Flo Group SharePoint notification system. Do not reply to this email.</p>");
-        sb.Append("<p style=\"margin:4px 0 0; font-size:11px; color:#94a3b8;\">Stream-Flo USA LLC &middot; Master Flo Valve USA Inc. &middot; Dycor</p>");
-        sb.Append("</div>");
+        // ---- Section heading ----
+        sb.Append("<tr><td style=\"padding:20px 36px 4px;\">");
+        sb.Append("<div style=\"font-size:11px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#94a3b8; border-top:1px solid #eceff4; padding-top:18px;\">What changed</div>");
+        sb.Append("</td></tr>");
 
-        sb.Append("</td></tr></table></td></tr></table></body></html>");
+        // ---- Item cards ----
+        sb.Append("<tr><td style=\"padding:8px 36px 8px;\">");
+        var idx = 0;
+        foreach (var c in changes)
+        {
+            idx++;
+            sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:0 0 10px; background:#ffffff; border:1px solid #eceff4; border-left:4px solid ").Append(accent).Append("; border-radius:10px;\"><tr><td style=\"padding:14px 16px;\">");
+            sb.Append("<div style=\"font-size:11px; font-weight:700; color:").Append(accent).Append("; letter-spacing:0.5px; margin:0 0 4px;\">#").Append(idx).Append("</div>");
+            sb.Append("<a href=\"").Append(Enc(c.WebUrl)).Append("\" style=\"font-size:15px; font-weight:600; color:#0f172a; text-decoration:none;\">").Append(Enc(c.Title)).Append("</a>");
+            sb.Append("<div style=\"font-size:12.5px; color:#64748b; margin-top:6px;\">");
+            sb.Append("<span style=\"color:#475569; font-weight:600;\">Updated</span> ").Append(Enc(FormatModifiedDate(c.Modified)));
+            sb.Append(" &nbsp;&middot;&nbsp; <span style=\"color:#475569; font-weight:600;\">By</span> ").Append(Enc(string.IsNullOrWhiteSpace(c.ModifiedBy) ? "Unknown user" : c.ModifiedBy));
+            sb.Append("</div>");
+            sb.Append("</td></tr></table>");
+        }
+        sb.Append("</td></tr>");
+
+        // ---- Footer ----
+        sb.Append("<tr><td style=\"padding:22px 36px 26px; background:#fafbfc; border-top:1px solid #eceff4;\">");
+        sb.Append("<div style=\"font-size:11px; color:#94a3b8; line-height:1.6;\">This is an automated message from the Stream-Flo Group SharePoint notification system. Please do not reply to this email.</div>");
+        sb.Append("<div style=\"font-size:11px; color:#cbd5e1; margin-top:10px;\">");
+        for (var i = 0; i < FooterEntities.Length; i++)
+        {
+            var (key, legal) = FooterEntities[i];
+            var isActive = brandInfo != null && string.Equals(brandInfo.DisplayName, key, StringComparison.OrdinalIgnoreCase);
+            if (i > 0) sb.Append(" &nbsp;&middot;&nbsp; ");
+            if (isActive)
+                sb.Append("<span style=\"color:").Append(accent).Append("; font-weight:700;\">").Append(Enc(legal)).Append("</span>");
+            else
+                sb.Append("<span style=\"color:#94a3b8;\">").Append(Enc(legal)).Append("</span>");
+        }
+        sb.Append("</div>");
+        sb.Append("</td></tr>");
+
+        sb.Append("</table></td></tr></table></body></html>");
         return sb.ToString();
     }
 
-    /// <summary>Darken a hex color (for the subtitle bar under the brand header).</summary>
+    private static void AppendSummaryRow(StringBuilder sb, string label, string encodedValue, bool last)
+    {
+        var pad = last ? "0" : "0 0 8px";
+        sb.Append("<tr><td style=\"padding:").Append(pad).Append("; width:140px; color:#64748b; font-weight:600; vertical-align:top;\">").Append(System.Net.WebUtility.HtmlEncode(label)).Append("</td>");
+        sb.Append("<td style=\"padding:").Append(pad).Append("; color:#1e293b; vertical-align:top;\">").Append(encodedValue).Append("</td></tr>");
+    }
+
+    /// <summary>Darken a hex color (for the gradient base and sub-bar under the brand header).</summary>
     private static string Darken(string hex, double factor = 0.7)
     {
         try
@@ -170,6 +242,22 @@ public class EmailService : IEmailService
             return $"#{r:X2}{g:X2}{bl:X2}";
         }
         catch { return "#002a57"; }
+    }
+
+    /// <summary>Lighten a hex color toward white by <paramref name="amount"/> (0..1) for soft brand-tinted chips/panels.</summary>
+    private static string Tint(string hex, double amount = 0.9)
+    {
+        try
+        {
+            hex = hex.TrimStart('#');
+            if (hex.Length != 6) return "#eef2f7";
+            int Mix(int c) => (int)Math.Round(c + (255 - c) * amount);
+            int r = Mix(Convert.ToInt32(hex.Substring(0, 2), 16));
+            int g = Mix(Convert.ToInt32(hex.Substring(2, 2), 16));
+            int bl = Mix(Convert.ToInt32(hex.Substring(4, 2), 16));
+            return $"#{r:X2}{g:X2}{bl:X2}";
+        }
+        catch { return "#eef2f7"; }
     }
 
     /// <summary>Format modified date for email; shows "Unknown date" if unparsed (default).</summary>
