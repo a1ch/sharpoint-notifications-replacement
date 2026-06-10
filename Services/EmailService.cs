@@ -14,7 +14,8 @@ public class EmailService : IEmailService
     private const string GroupName = "Stream-Flo Group of Companies";
     private const string GroupAccent = "#003366";   // navy — used for links, button, borders, chips
 
-    // Heavy wordmark/heading font stack (reads as an intentional logo across clients).
+    // Heavy font stack applied to every text element (reads as an intentional, consistent
+    // brand face across clients). Set per-element because Outlook resets fonts inside tables.
     private const string HeadFont = "'Arial Black','Segoe UI',Arial,sans-serif";
 
     /// <summary>The three group companies (display name, accent color, legal name). Used for the header ribbon.</summary>
@@ -118,7 +119,7 @@ public class EmailService : IEmailService
         sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>");
         sb.Append("<meta name=\"color-scheme\" content=\"light only\"/>");
         sb.Append("<title>SharePoint Daily Digest</title></head>");
-        sb.Append("<body style=\"margin:0; padding:0; width:100%; background:#eef2f7; font-family:'Segoe UI',Arial,sans-serif; font-size:15px; line-height:1.5; color:#1e293b; -webkit-font-smoothing:antialiased;\">");
+        sb.Append("<body style=\"margin:0; padding:0; width:100%; background:#eef2f7; font-family:").Append(HeadFont).Append("; font-size:15px; line-height:1.5; color:#1e293b; -webkit-font-smoothing:antialiased;\">");
 
         // Hidden preheader (inbox preview text)
         sb.Append("<div style=\"display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;\">")
@@ -155,7 +156,7 @@ public class EmailService : IEmailService
         sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:21px; font-weight:800; color:#0f172a; margin:0 0 12px; line-height:1.25;\">").Append(Enc(listOrLibraryName)).Append("</div>");
 
         // Count pill
-        sb.Append("<span style=\"display:inline-block; background:").Append(accentSoft).Append("; color:").Append(accent)
+        sb.Append("<span style=\"font-family:").Append(HeadFont).Append("; display:inline-block; background:").Append(accentSoft).Append("; color:").Append(accent)
           .Append("; font-size:12px; font-weight:700; letter-spacing:0.3px; padding:6px 14px; border-radius:999px;\">")
           .Append(changes.Count).Append(' ').Append(itemWord).Append(" updated &middot; last 24 hours</span>");
 
@@ -172,7 +173,7 @@ public class EmailService : IEmailService
         if (hasLibraryUrl)
         {
             sb.Append("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:20px 0 4px;\"><tr><td style=\"background:").Append(accent).Append("; border-radius:8px;\">");
-            sb.Append("<a href=\"").Append(Enc(listOrLibraryUrl)).Append("\" style=\"display:inline-block; padding:12px 24px; font-size:14px; font-weight:700; color:#ffffff; text-decoration:none; letter-spacing:0.2px;\">Open ").Append(Enc(listOrLibraryName)).Append(" &rarr;</a>");
+            sb.Append("<a href=\"").Append(Enc(listOrLibraryUrl)).Append("\" style=\"font-family:").Append(HeadFont).Append("; display:inline-block; padding:12px 24px; font-size:14px; font-weight:700; color:#ffffff; text-decoration:none; letter-spacing:0.2px;\">Open ").Append(Enc(listOrLibraryName)).Append(" &rarr;</a>");
             sb.Append("</td></tr></table>");
         }
 
@@ -191,8 +192,8 @@ public class EmailService : IEmailService
             idx++;
             sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:0 0 10px; background:#ffffff; border:1px solid #eceff4; border-left:4px solid ").Append(accent).Append("; border-radius:10px;\"><tr><td style=\"padding:14px 16px;\">");
             sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:11px; font-weight:700; color:").Append(accent).Append("; letter-spacing:0.5px; margin:0 0 4px;\">#").Append(idx).Append("</div>");
-            sb.Append("<a href=\"").Append(Enc(c.WebUrl)).Append("\" style=\"font-size:15px; font-weight:600; color:#0f172a; text-decoration:none;\">").Append(Enc(c.Title)).Append("</a>");
-            sb.Append("<div style=\"font-size:12.5px; color:#64748b; margin-top:6px;\">");
+            sb.Append("<a href=\"").Append(Enc(c.WebUrl)).Append("\" style=\"font-family:").Append(HeadFont).Append("; font-size:15px; font-weight:600; color:#0f172a; text-decoration:none;\">").Append(Enc(c.Title)).Append("</a>");
+            sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:12.5px; color:#64748b; margin-top:6px;\">");
             sb.Append("<span style=\"color:#475569; font-weight:600;\">Updated</span> ").Append(Enc(FormatModifiedDate(c.Modified)));
             sb.Append(" &nbsp;&middot;&nbsp; <span style=\"color:#475569; font-weight:600;\">By</span> ").Append(Enc(string.IsNullOrWhiteSpace(c.ModifiedBy) ? "Unknown user" : c.ModifiedBy));
             sb.Append("</div>");
@@ -202,7 +203,7 @@ public class EmailService : IEmailService
 
         // ---- Footer ----
         sb.Append("<tr><td style=\"padding:22px 36px 26px; background:#fafbfc; border-top:1px solid #eceff4;\">");
-        sb.Append("<div style=\"font-size:11px; color:#94a3b8; line-height:1.6;\">This is an automated message from the Stream-Flo Group of Companies SharePoint notification system. Please do not reply to this email.</div>");
+        sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:11px; color:#94a3b8; line-height:1.6;\">This is an automated message from the Stream-Flo Group of Companies SharePoint notification system. Please do not reply to this email.</div>");
         sb.Append("</td></tr>");
 
         sb.Append("</table></td></tr></table></body></html>");
@@ -212,8 +213,8 @@ public class EmailService : IEmailService
     private static void AppendSummaryRow(StringBuilder sb, string label, string encodedValue, bool last)
     {
         var pad = last ? "0" : "0 0 8px";
-        sb.Append("<tr><td style=\"padding:").Append(pad).Append("; width:140px; color:#64748b; font-weight:600; vertical-align:top;\">").Append(System.Net.WebUtility.HtmlEncode(label)).Append("</td>");
-        sb.Append("<td style=\"padding:").Append(pad).Append("; color:#1e293b; vertical-align:top;\">").Append(encodedValue).Append("</td></tr>");
+        sb.Append("<tr><td style=\"font-family:").Append(HeadFont).Append("; padding:").Append(pad).Append("; width:140px; color:#64748b; font-weight:600; vertical-align:top;\">").Append(System.Net.WebUtility.HtmlEncode(label)).Append("</td>");
+        sb.Append("<td style=\"font-family:").Append(HeadFont).Append("; padding:").Append(pad).Append("; color:#1e293b; vertical-align:top;\">").Append(encodedValue).Append("</td></tr>");
     }
 
     /// <summary>Darken a hex color (for the gradient base and sub-bar under the group header).</summary>
