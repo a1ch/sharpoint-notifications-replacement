@@ -11,10 +11,10 @@ public class EmailService : IEmailService
 {
     // Unified Stream-Flo Group identity. The per-row Brand value is intentionally ignored:
     // every digest uses one template that represents all three companies together.
-    private const string GroupName = "Stream-Flo Group";
+    private const string GroupName = "Stream-Flo Group of Companies";
     private const string GroupAccent = "#003366";   // navy — used for links, button, borders, chips
 
-    /// <summary>The three group companies (display name, accent color, legal name) shown in the header and footer.</summary>
+    /// <summary>The three group companies (display name, accent color, legal name). Used for the header ribbon.</summary>
     private static readonly (string Name, string Color, string Legal)[] GroupBrands =
     {
         ("Stream-Flo", "#003366", "Stream-Flo USA LLC"),
@@ -108,7 +108,6 @@ public class EmailService : IEmailService
         var latestChangedBy = !string.IsNullOrWhiteSpace(latestChange?.ModifiedBy) ? latestChange!.ModifiedBy : "Unknown user";
         var latestChangedAt = latestChange != null ? FormatModifiedDate(latestChange.Modified) : "Unknown date";
         var itemWord = changes.Count == 1 ? "item" : "items";
-        var companyNames = string.Join("  ·  ", GroupBrands.Select(g => g.Name));
 
         var sb = new StringBuilder(8192);
 
@@ -134,10 +133,9 @@ public class EmailService : IEmailService
 
         // ---- Group header ----
         sb.Append("<tr><td style=\"background-color:").Append(accent)
-          .Append("; background-image:linear-gradient(135deg,").Append(accent).Append(" 0%,").Append(accentDark).Append(" 100%); padding:32px 36px 26px;\">");
-        sb.Append("<div style=\"font-size:27px; font-weight:800; letter-spacing:0.4px; color:#ffffff; line-height:1.1;\">").Append(Enc(GroupName)).Append("</div>");
+          .Append("; background-image:linear-gradient(135deg,").Append(accent).Append(" 0%,").Append(accentDark).Append(" 100%); padding:32px 36px 28px;\">");
+        sb.Append("<div style=\"font-family:'Arial Black','Segoe UI',Arial,sans-serif; font-size:24px; font-weight:800; letter-spacing:0.2px; color:#ffffff; line-height:1.15;\">").Append(Enc(GroupName)).Append("</div>");
         sb.Append("<div style=\"width:46px; height:3px; background:rgba(255,255,255,0.55); border-radius:2px; margin:14px 0 0;\"></div>");
-        sb.Append("<div style=\"font-size:13px; font-weight:600; color:rgba(255,255,255,0.9); margin-top:12px; letter-spacing:0.6px;\">").Append(Enc(companyNames)).Append("</div>");
         sb.Append("</td></tr>");
 
         // ---- Sub-bar ----
@@ -199,18 +197,9 @@ public class EmailService : IEmailService
         }
         sb.Append("</td></tr>");
 
-        // ---- Footer: all three companies, each with its color dot ----
+        // ---- Footer ----
         sb.Append("<tr><td style=\"padding:22px 36px 26px; background:#fafbfc; border-top:1px solid #eceff4;\">");
-        sb.Append("<div style=\"font-size:11px; color:#94a3b8; line-height:1.6;\">This is an automated message from the Stream-Flo Group SharePoint notification system. Please do not reply to this email.</div>");
-        sb.Append("<div style=\"font-size:11px; color:#94a3b8; margin-top:12px;\">");
-        for (var i = 0; i < GroupBrands.Length; i++)
-        {
-            var g = GroupBrands[i];
-            if (i > 0) sb.Append(" &nbsp;&nbsp; ");
-            sb.Append("<span style=\"display:inline-block; width:8px; height:8px; border-radius:2px; background:").Append(g.Color).Append("; margin-right:6px;\"></span>");
-            sb.Append("<span style=\"color:#64748b;\">").Append(Enc(g.Legal)).Append("</span>");
-        }
-        sb.Append("</div>");
+        sb.Append("<div style=\"font-size:11px; color:#94a3b8; line-height:1.6;\">This is an automated message from the Stream-Flo Group of Companies SharePoint notification system. Please do not reply to this email.</div>");
         sb.Append("</td></tr>");
 
         sb.Append("</table></td></tr></table></body></html>");
