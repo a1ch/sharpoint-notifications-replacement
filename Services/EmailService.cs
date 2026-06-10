@@ -14,6 +14,9 @@ public class EmailService : IEmailService
     private const string GroupName = "Stream-Flo Group of Companies";
     private const string GroupAccent = "#003366";   // navy — used for links, button, borders, chips
 
+    // Heavy wordmark/heading font stack (reads as an intentional logo across clients).
+    private const string HeadFont = "'Arial Black','Segoe UI',Arial,sans-serif";
+
     /// <summary>The three group companies (display name, accent color, legal name). Used for the header ribbon.</summary>
     private static readonly (string Name, string Color, string Legal)[] GroupBrands =
     {
@@ -134,22 +137,22 @@ public class EmailService : IEmailService
         // ---- Group header ----
         sb.Append("<tr><td style=\"background-color:").Append(accent)
           .Append("; background-image:linear-gradient(135deg,").Append(accent).Append(" 0%,").Append(accentDark).Append(" 100%); padding:32px 36px 28px;\">");
-        sb.Append("<div style=\"font-family:'Arial Black','Segoe UI',Arial,sans-serif; font-size:24px; font-weight:800; letter-spacing:0.2px; color:#ffffff; line-height:1.15;\">").Append(Enc(GroupName)).Append("</div>");
+        sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:24px; font-weight:800; letter-spacing:0.2px; color:#ffffff; line-height:1.15;\">").Append(Enc(GroupName)).Append("</div>");
         sb.Append("<div style=\"width:46px; height:3px; background:rgba(255,255,255,0.55); border-radius:2px; margin:14px 0 0;\"></div>");
         sb.Append("</td></tr>");
 
         // ---- Sub-bar ----
         sb.Append("<tr><td style=\"background:").Append(accentDark).Append("; padding:9px 36px;\">");
-        sb.Append("<span style=\"color:rgba(255,255,255,0.92); font-size:11px; font-weight:600; letter-spacing:1.6px; text-transform:uppercase;\">SharePoint Daily Digest</span>");
+        sb.Append("<span style=\"font-family:").Append(HeadFont).Append("; color:rgba(255,255,255,0.92); font-size:11px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase;\">SharePoint Daily Digest</span>");
         sb.Append("</td></tr>");
 
         // ---- Body ----
         sb.Append("<tr><td style=\"padding:30px 36px 8px;\">");
 
         if (hasSiteName)
-            sb.Append("<div style=\"font-size:11px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#94a3b8; margin:0 0 6px;\">").Append(Enc(siteName)).Append("</div>");
+            sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:11px; font-weight:700; letter-spacing:1.3px; text-transform:uppercase; color:#94a3b8; margin:0 0 6px;\">").Append(Enc(siteName)).Append("</div>");
 
-        sb.Append("<div style=\"font-size:21px; font-weight:700; color:#0f172a; margin:0 0 12px; line-height:1.25;\">").Append(Enc(listOrLibraryName)).Append("</div>");
+        sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:21px; font-weight:800; color:#0f172a; margin:0 0 12px; line-height:1.25;\">").Append(Enc(listOrLibraryName)).Append("</div>");
 
         // Count pill
         sb.Append("<span style=\"display:inline-block; background:").Append(accentSoft).Append("; color:").Append(accent)
@@ -177,7 +180,7 @@ public class EmailService : IEmailService
 
         // ---- Section heading ----
         sb.Append("<tr><td style=\"padding:20px 36px 4px;\">");
-        sb.Append("<div style=\"font-size:11px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#94a3b8; border-top:1px solid #eceff4; padding-top:18px;\">What changed</div>");
+        sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:11px; font-weight:700; letter-spacing:1.3px; text-transform:uppercase; color:#94a3b8; border-top:1px solid #eceff4; padding-top:18px;\">What changed</div>");
         sb.Append("</td></tr>");
 
         // ---- Item cards ----
@@ -187,7 +190,7 @@ public class EmailService : IEmailService
         {
             idx++;
             sb.Append("<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:0 0 10px; background:#ffffff; border:1px solid #eceff4; border-left:4px solid ").Append(accent).Append("; border-radius:10px;\"><tr><td style=\"padding:14px 16px;\">");
-            sb.Append("<div style=\"font-size:11px; font-weight:700; color:").Append(accent).Append("; letter-spacing:0.5px; margin:0 0 4px;\">#").Append(idx).Append("</div>");
+            sb.Append("<div style=\"font-family:").Append(HeadFont).Append("; font-size:11px; font-weight:700; color:").Append(accent).Append("; letter-spacing:0.5px; margin:0 0 4px;\">#").Append(idx).Append("</div>");
             sb.Append("<a href=\"").Append(Enc(c.WebUrl)).Append("\" style=\"font-size:15px; font-weight:600; color:#0f172a; text-decoration:none;\">").Append(Enc(c.Title)).Append("</a>");
             sb.Append("<div style=\"font-size:12.5px; color:#64748b; margin-top:6px;\">");
             sb.Append("<span style=\"color:#475569; font-weight:600;\">Updated</span> ").Append(Enc(FormatModifiedDate(c.Modified)));
